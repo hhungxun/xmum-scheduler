@@ -1,0 +1,102 @@
+/* Crepe frame theme variables tuned to our app palette. */
+.milkdown-host {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.milkdown-host .milkdown {
+  height: 100%;
+  background: transparent !important;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.milkdown-host .ProseMirror {
+  min-height: 100%;
+  padding: 28px 36px 80px;
+  outline: none;
+  font-size: 0.96rem;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.milkdown-host .ProseMirror h1 {
+  font-size: 1.65rem;
+  margin: 0.4em 0 0.6em;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.milkdown-host .ProseMirror h2 {
+  font-size: 1.3rem;
+  margin: 1em 0 0.4em;
+  font-weight: 700;
+}
+.milkdown-host .ProseMirror h3 {
+  font-size: 1.1rem;
+  margin: 0.9em 0 0.3em;
+  font-weight: 700;
+}
+.milkdown-host .ProseMirror p {
+  margin: 0.4em 0 0.8em;
+}
+.milkdown-host .ProseMirror code {
+  background: var(--soft);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.88em;
+}
+.milkdown-host .ProseMirror pre {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-size: 0.85em;
+  overflow-x: auto;
+}
+.milkdown-host .ProseMirror blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 0.6em 0;
+  padding: 0.2em 0 0.2em 14px;
+  color: var(--muted);
+}
+.milkdown-host .ProseMirror a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.milkdown-host .ProseMirror ul,
+.milkdown-host .ProseMirror ol {
+  padding-left: 1.4em;
+}
+.milkdown-host .ProseMirror hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.4em 0;
+}
+.milkdown-host .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.6em 0;
+}
+.milkdown-host .ProseMirror th,
+.milkdown-host .ProseMirror td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+/* Crepe popovers respect theme */
+.milkdown-host .milkdown-slash-menu,
+.milkdown-host milkdown-block-handle,
+.milkdown-host milkdown-toolbar {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.milkdown-host milkdown-toolbar button:hover {
+  background: var(--soft);
+}
