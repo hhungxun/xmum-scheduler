@@ -810,6 +810,32 @@ function App() {
           setUserProfile={setUserProfile}
           onComplete={() => setUserProfile({ ...userProfile, onboardingComplete: true })}
           onSkip={() => setUserProfile({ ...userProfile, onboardingComplete: true })}
+          // Semester / Timetable
+          calendarOptions={calendarOptions}
+          track={track}
+          setTrack={setTrack}
+          foundationIntake={foundationIntake}
+          setFoundationIntake={setFoundationIntake}
+          selectedCalendarId={selectedCalendarId}
+          setSelectedCalendarId={setSelectedCalendarId}
+          timetablePreview={timetablePreview}
+          importHtmlFile={importHtmlFile}
+          importBundledTimetable={importBundledTimetable}
+          applyTimetableImport={applyTimetableImport}
+          // Moodle
+          moodle={moodle}
+          setMoodle={setMoodle}
+          moodlePassword={moodlePassword}
+          setMoodlePassword={setMoodlePassword}
+          moodleLogin={moodleLogin}
+          toggleMoodleCourse={toggleMoodleCourse}
+          applyMoodleSelection={applyMoodleSelection}
+          syncMoodleFiles={syncMoodleFiles}
+          // AI
+          aiSettings={aiSettings}
+          setAISettings={setAISettings}
+          // Navigation
+          nav={nav}
         />
       )}
       <div className="app">
