@@ -26,3 +26,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock
