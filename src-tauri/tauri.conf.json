@@ -1,6 +1,6 @@
 {
   "$schema": "https://v2.tauri.app/schemas/config.schema.json",
-  "productName": "XMUM Scheduler",
+  "productName": "xmum-scheduler",
   "version": "1.0.0",
   "identifier": "com.xmum.scheduler",
   "build": {
