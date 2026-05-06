@@ -22,7 +22,7 @@ export function buildSystemContext(params: {
 
   const assignmentList = assignments.map((a) => {
     const subj = subjects.find((s) => s.id === a.subjectId);
-    return `- ${a.title} (${subj?.code ?? "?"}) | due: ${a.due} | weight: ${a.weight}% | status: ${statusLabels[a.status]} | id: ${a.id}`;
+    return `- ${a.title} (${subj?.code ?? "?"}) | due: ${a.due || "none"} | weight: ${a.weight}% | status: ${statusLabels[a.status]} | id: ${a.id}`;
   }).join("\n") || "None";
 
   const examList = exams.map((e) => {
@@ -50,7 +50,7 @@ ${subjectList}
 --- CALENDAR EVENTS ---
 ${calendarItems}
 
---- ASSIGNMENTS ---
+--- TASKS ---
 ${assignmentList}
 
 --- EXAMS / QUIZZES ---
@@ -73,8 +73,8 @@ Supported actions:
 - create_exam / update_exam / delete_exam
 
 For note actions, payload must include subjectId and noteId where relevant.
-For assignment/exam create, default status is "todo" and kind is "quiz" if not specified.
-If the user asks you to plan a study schedule, analyze the calendar availability, assignment deadlines, and exam dates, then suggest a schedule. You do not need an action block for suggestions unless you are actually creating events.
+For task/exam create, default status is "todo" and kind is "quiz" if not specified.
+If the user asks you to plan a study schedule, analyze the calendar availability, task deadlines, and exam dates, then suggest a schedule. You do not need an action block for suggestions unless you are actually creating events.
 
 Keep responses concise, elegant, and actionable. Use context naturally. Do not mention the raw IDs to the user unless necessary.
 `;

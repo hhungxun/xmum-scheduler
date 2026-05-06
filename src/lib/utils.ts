@@ -4,8 +4,7 @@ export const fullDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
 export const statusLabels: Record<import("../types").Status, string> = {
   todo: "Todo",
   progress: "Doing",
-  submitted: "Submitted",
-  graded: "Graded",
+  done: "Done",
 };
 export const examKindLabels: Record<import("../types").ExamKind, string> = {
   quiz: "Quiz",
@@ -16,6 +15,7 @@ export const examKindLabels: Record<import("../types").ExamKind, string> = {
 };
 export const ALL_NOTES_FOLDER = "all";
 export const UNFILED_FOLDER = "unfiled";
+export const MY_SPACE_CODE = "SPACE";
 export const HOUR_START = 8;
 export const HOUR_END = 22;
 
@@ -244,20 +244,102 @@ export function makeNote(title: string, body: string, folderId?: string): import
   };
 }
 
+export function gettingStartedNoteMarkdown(subjectCode = "this subject") {
+  return `# Getting Started
+
+Use this note as a quick reference for the Knowledge workspace.
+
+## Core workflow
+
+1. Create folders from the Knowledge sidebar to group lecture notes, labs, tutorials, and revision material.
+2. Create a note in the right folder, then write in rich text mode by default.
+3. Type [[ to link another note, then use the picker to choose an existing note.
+4. Type @ to link a synced Moodle file, then choose the subject and file from the picker.
+5. Open the note AI chat to ask questions using the current note as context.
+
+## Linking examples
+
+- Link another note: [[Lecture 1]]
+- Link a Moodle file: type @ and choose a PDF, slide deck, lab sheet, or assignment brief.
+- Example revision flow: open [[${subjectCode} overview]], link the lecture slides with @, then ask AI to generate practice questions.
+
+## Tips
+
+- Use All notes to scan everything in the subject.
+- Use Unfiled for quick captures before sorting into folders.
+- Moodle file links open the synced file when available.
+- The Course Content table in the overview note tracks chapters, knowledge points, assessment plans, and progress.
+`;
+}
+
+export function makeMySpaceSubject(): import("../types").Subject {
+  return {
+    id: uid("subject"),
+    code: MY_SPACE_CODE,
+    name: "My Space",
+    lecturer: "",
+    color: "#64748b",
+    courseInfo: "# My Space\n\nPersonal notes and folders that are not tied to a single subject.\n",
+    folders: [],
+    notes: [
+      makeNote("Getting Started", gettingStartedNoteMarkdown("My Space")),
+    ],
+  };
+}
+
 export function makeSubjectFromMoodle(course: import("../types").MoodleCourseLite, color: string): import("../types").Subject {
   const code = course.shortname?.split(/\s|-/)[0]?.toUpperCase() ?? `M${course.id}`;
+  const folderId = uid("folder");
+  const courseInfo = `# ${code} ${course.fullname}
+
+## Basic Information
+
+| Field | Value |
+|---|---|
+| Lecturer |  |
+| Venue |  |
+| Credit Hours |  |
+
+## Course Content
+
+| Chapter | Knowledge Point 1 | Knowledge Point 2 | Knowledge Point 3 | Chapter Progress |
+|---|---|---|---|---|
+| Chapter 1: Introduction | [ ] Point 1 | [ ] Point 2 | [ ] Point 3 | ░░░░░░░░░░ 0% |
+| Chapter 2: Core Topics | [ ] Point 1 | [ ] Point 2 | [ ] Point 3 | ░░░░░░░░░░ 0% |
+| Chapter 3: Advanced | [ ] Point 1 | [ ] Point 2 | [ ] Point 3 | ░░░░░░░░░░ 0% |
+
+**Overall Course Progress:** ░░░░░░░░░░ **0%**
+
+## Assessment Plan
+
+| Assessment Component | Weight (%) | Score Obtained | Full Marks | Weighted Score | Status |
+|---|---:|---:|---:|---:|---|
+
+**Total Weight:** 0% ⚠️ Should be 100%
+
+## Examination / Quiz Statistics
+
+- **Current completed assessment percentage:** 0%
+- **Current weighted score:** 0.0%
+- **Remaining percentage:** 100%
+- **Estimated final grade:** F
+- **Progress by assessment type:**
+  - other: 0%
+- **Upcoming incomplete assessments:**
+  - None
+`;
   return {
     id: uid("subject"),
     code,
     name: course.fullname,
     lecturer: "",
     color,
-    courseInfo: `# ${course.fullname}\n\nMoodle ID: ${course.id}\nShortname: ${course.shortname ?? "—"}\n`,
-    folders: [],
+    courseInfo,
+    folders: [{ id: folderId, name: code, createdAt: new Date().toISOString() }],
     moodleCourseId: course.id,
     notes: [
-      makeNote(`${code} overview`, `# ${course.fullname}\n\nWrite lecture summaries, formulas, and questions here.\n\n[[Assessment plan]]`),
-      makeNote("Assessment plan", `# Assessment plan\n\nTrack assignments and tests for ${course.fullname}.`),
+      makeNote(`${code} overview`, courseInfo, folderId),
+      makeNote("Getting Started", gettingStartedNoteMarkdown(code)),
     ],
   };
 }

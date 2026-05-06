@@ -201,14 +201,14 @@ pub struct MoodleLoginResponse {
 #[tauri::command]
 pub async fn moodle_login(request: MoodleLoginRequest) -> Result<MoodleLoginResponse, String> {
     let client = reqwest::Client::new();
-    let body = reqwest::multipart::Form::new()
-        .text("username", request.username)
-        .text("password", request.password)
-        .text("service", "moodle_mobile_app");
+    let mut body = std::collections::HashMap::new();
+    body.insert("username", request.username);
+    body.insert("password", request.password);
+    body.insert("service", "moodle_mobile_app".to_string());
 
     let response = client
         .post(format!("{}/login/token.php", MOODLE_ORIGIN))
-        .multipart(body)
+        .form(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -493,6 +493,7 @@ async fn install_moodle_file(file: &crate::MoodleFile) -> crate::MoodleFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeSyncRequest {
     pub subjects: Vec<SubjectSyncData>,
+    pub root_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -522,7 +523,14 @@ pub struct NoteSyncData {
 
 #[tauri::command]
 pub async fn knowledge_sync(request: KnowledgeSyncRequest) -> Result<crate::KnowledgeSyncResult, String> {
-    let kdir = knowledge_dir();
+    let kdir = match &request.root_path {
+        Some(path) if !path.trim().is_empty() => {
+            let p = PathBuf::from(path.trim());
+            let _ = fs::create_dir_all(&p);
+            p
+        }
+        _ => knowledge_dir(),
+    };
     let _ = fs::remove_dir_all(&kdir);
     let _ = fs::create_dir_all(&kdir);
 
@@ -651,6 +659,18 @@ pub fn get_upload_file(request: GetFileRequest) -> Result<Vec<u8>, String> {
     fs::read(&absolute_path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn pick_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let handle = std::thread::spawn(move || {
+        app.dialog().file().blocking_pick_folder()
+    });
+    match handle.join().map_err(|e| format!("Thread join failed: {:?}", e))? {
+        Some(path) => Ok(Some(path.to_string())),
+        None => Ok(None),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AIChatRequest {
     pub provider: String,
@@ -662,9 +682,17 @@ pub struct AIChatRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIMessageImage {
+    pub data: String,
+    pub media_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AIMessage {
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub images: Vec<AIMessageImage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -706,7 +734,24 @@ async fn call_openai(api_key: &str, model: Option<&str>, system: Option<&str>, m
         msgs.push(serde_json::json!({"role": "system", "content": sys}));
     }
     for msg in messages {
-        msgs.push(serde_json::json!({"role": msg.role, "content": msg.content}));
+        if msg.images.is_empty() {
+            msgs.push(serde_json::json!({"role": msg.role, "content": msg.content}));
+        } else {
+            // Multimodal message with images
+            let mut content_parts = vec![
+                serde_json::json!({"type": "text", "text": msg.content})
+            ];
+            for img in &msg.images {
+                content_parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}", img.media_type, img.data),
+                        "detail": "high"
+                    }
+                }));
+            }
+            msgs.push(serde_json::json!({"role": msg.role, "content": content_parts}));
+        }
     }
 
     let response = client
@@ -721,7 +766,7 @@ async fn call_openai(api_key: &str, model: Option<&str>, system: Option<&str>, m
         .map_err(|e| e.to_string())?;
 
     let payload: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    
+
     if payload.get("error").is_some() {
         return Err(payload["error"]["message"].as_str().unwrap_or("OpenAI request failed").to_string());
     }
@@ -732,12 +777,32 @@ async fn call_openai(api_key: &str, model: Option<&str>, system: Option<&str>, m
 async fn call_anthropic(api_key: &str, model: Option<&str>, system: Option<&str>, messages: &[AIMessage]) -> Result<String, String> {
     let client = reqwest::Client::new();
     let msgs: Vec<_> = messages.iter()
-        .map(|msg| serde_json::json!({"role": msg.role, "content": msg.content}))
+        .map(|msg| {
+            if msg.images.is_empty() {
+                serde_json::json!({"role": msg.role, "content": msg.content})
+            } else {
+                // Multimodal message with images
+                let mut content_parts = vec![
+                    serde_json::json!({"type": "text", "text": msg.content})
+                ];
+                for img in &msg.images {
+                    content_parts.push(serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img.media_type,
+                            "data": img.data
+                        }
+                    }));
+                }
+                serde_json::json!({"role": msg.role, "content": content_parts})
+            }
+        })
         .collect();
 
     let mut body = serde_json::json!({
         "model": model.unwrap_or("claude-3-5-haiku-latest"),
-        "max_tokens": 1024,
+        "max_tokens": 4096,
         "messages": msgs,
     });
     if let Some(sys) = system {

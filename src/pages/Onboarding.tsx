@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ArrowRight, ArrowLeft, Sparkles, User, Calendar, BookOpen, Cloud, BrainCircuit, Compass, CheckCircle2, GraduationCap, Upload, Dices, Monitor, FileText, ClipboardList, Trophy, Settings, MessageSquare, Palette, LayoutDashboard, X, ChevronRight, ExternalLink, Loader2, AlertCircle, FileCheck, FolderSync, Zap, KeyRound, Terminal, Bot, Eye, EyeOff, Lock, Globe, BookMarked, Target, Bell, Layers, Search, Clock, PenTool, BarChart3, CheckCheck, PartyPopper, RotateCcw, SkipForward
+  ArrowRight, ArrowLeft, Sparkles, User, Calendar, BookOpen, Cloud, BrainCircuit, Compass, CheckCircle2, GraduationCap, Upload, Dices, Monitor, FileText, ClipboardList, Trophy, Settings, MessageSquare, Palette, LayoutDashboard, X, ChevronRight, ExternalLink, Loader2, AlertCircle, FileCheck, FolderSync, Zap, KeyRound, Terminal, Bot, Eye, EyeOff, Lock, Globe, BookMarked, Target, Bell, Layers, Search, Clock, PenTool, BarChart3, CheckCheck, PartyPopper, RotateCcw, SkipForward, Folder, FolderOpen, CircleDot, CircleCheck, CircleX, Info, Rocket
 } from "lucide-react";
 import type {
-  UserProfile, AcademicOption, AISettings, AIProvider, Theme, MoodleState, ParsedClass
+  UserProfile, AcademicOption, AISettings, AIProvider, Theme, MoodleState, ParsedClass, Subject
 } from "../types";
 import { Avatar, PRESETS, randomAvatarPreset } from "../components/Avatar";
 import { readAsDataUrl } from "../lib/utils";
@@ -11,18 +11,19 @@ import { readAsDataUrl } from "../lib/utils";
 type OnboardingStep =
   | "welcome"
   | "profile"
+  | "storage"
   | "semester"
   | "timetable"
   | "moodle"
-  | "ai"
-  | "tour"
+  | "ai-setup"
+  | "getting-started"
   | "complete";
 
 interface OnboardingProps {
   userProfile: UserProfile;
   setUserProfile: (v: UserProfile) => void;
   onComplete: () => void;
-  onSkip: () => void;
+  onStartTour: () => void;
 
   // Semester / Timetable
   calendarOptions: AcademicOption[];
@@ -42,7 +43,7 @@ interface OnboardingProps {
   setMoodle: (v: MoodleState | ((prev: MoodleState) => MoodleState)) => void;
   moodlePassword: string;
   setMoodlePassword: (v: string) => void;
-  moodleLogin: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
+  moodleLogin: (e: React.FormEvent<HTMLFormElement>, usernameOverride?: string) => Promise<void>;
   toggleMoodleCourse: (id: number) => void;
   applyMoodleSelection: () => void;
   syncMoodleFiles: () => Promise<void>;
@@ -51,74 +52,37 @@ interface OnboardingProps {
   aiSettings: AISettings;
   setAISettings: (v: AISettings) => void;
 
+  // Storage
+  notesDirectory: string | undefined;
+  onPickNotesDirectory: () => void;
+
+  // Subjects (from timetable, for Moodle matching)
+  subjects: Subject[];
+
   // Navigation
   nav: (page: import("../types").Page) => void;
 }
 
-const STEPS: { id: OnboardingStep; label: string }[] = [
-  { id: "welcome", label: "Welcome" },
-  { id: "profile", label: "Profile" },
-  { id: "semester", label: "Semester" },
-  { id: "timetable", label: "Timetable" },
-  { id: "moodle", label: "Moodle" },
-  { id: "ai", label: "AI" },
-  { id: "tour", label: "Tour" },
-  { id: "complete", label: "Done" },
+const STEPS: { id: OnboardingStep; label: string; icon: React.ReactNode }[] = [
+  { id: "welcome", label: "Welcome", icon: <Rocket size={14} /> },
+  { id: "profile", label: "Profile", icon: <User size={14} /> },
+  { id: "storage", label: "Storage", icon: <Folder size={14} /> },
+  { id: "semester", label: "Semester", icon: <Calendar size={14} /> },
+  { id: "timetable", label: "Timetable", icon: <BookOpen size={14} /> },
+  { id: "moodle", label: "Moodle", icon: <Cloud size={14} /> },
+  { id: "ai-setup", label: "AI", icon: <BrainCircuit size={14} /> },
+  { id: "getting-started", label: "Get Started", icon: <Sparkles size={14} /> },
+  { id: "complete", label: "Done", icon: <CheckCircle2 size={14} /> },
 ];
 
 const STEP_ORDER: OnboardingStep[] = STEPS.map((s) => s.id);
 
-const providerMeta: { id: AIProvider; label: string; desc: string; icon: React.ReactNode; needsKey: boolean; needsCli: boolean }[] = [
-  { id: "openai", label: "OpenAI", desc: "GPT-4o, GPT-4o-mini", icon: <Bot size={18} />, needsKey: true, needsCli: false },
-  { id: "anthropic", label: "Anthropic", desc: "Claude 3.5 Haiku, Sonnet", icon: <Sparkles size={18} />, needsKey: true, needsCli: false },
-  { id: "claude-code", label: "Claude Code", desc: "Local Claude CLI", icon: <Terminal size={18} />, needsKey: false, needsCli: true },
-  { id: "codex-cli", label: "Codex CLI", desc: "OpenAI Codex CLI", icon: <Zap size={18} />, needsKey: false, needsCli: true },
-  { id: "opencode", label: "Opencode", desc: "Opencode CLI", icon: <KeyRound size={18} />, needsKey: false, needsCli: true },
-];
-
-const tourCards: { page: import("../types").Page; title: string; desc: string; icon: React.ReactNode; features: string[] }[] = [
-  {
-    page: "dashboard",
-    title: "Dashboard",
-    desc: "Your command center. See today's schedule, upcoming deadlines, and chat with AI.",
-    icon: <LayoutDashboard size={28} />,
-    features: ["Today's class schedule", "Upcoming assignments", "AI chat assistant", "Quick stats overview"],
-  },
-  {
-    page: "calendar",
-    title: "Calendar",
-    desc: "Visualize your week. See classes, exams, and assignment deadlines at a glance.",
-    icon: <Calendar size={28} />,
-    features: ["Weekly timetable view", "Assignment deadlines", "Exam reminders", "Custom events"],
-  },
-  {
-    page: "knowledge",
-    title: "Knowledge",
-    desc: "Organize notes by subject. Write in Markdown with LaTeX math and wikilinks.",
-    icon: <BookOpen size={28} />,
-    features: ["Markdown note editor", "Subject folders", "LaTeX math support", "Course info panels"],
-  },
-  {
-    page: "assignments",
-    title: "Assignments",
-    desc: "Track tasks with kanban boards. Manage due dates, weights, and statuses.",
-    icon: <ClipboardList size={28} />,
-    features: ["Kanban task boards", "Due date tracking", "Weight & priority", "Moodle file linking"],
-  },
-  {
-    page: "exams",
-    title: "Exams",
-    desc: "Monitor grades and calculate targets. Track quizzes, midterms, and finals.",
-    icon: <Trophy size={28} />,
-    features: ["Grade tracking", "Target score calculator", "Analytics charts", "Weighted averages"],
-  },
-  {
-    page: "moodle",
-    title: "Moodle",
-    desc: "Sync course materials from XMUM Moodle. Access files directly in the app.",
-    icon: <Cloud size={28} />,
-    features: ["One-click login", "Course file sync", "Offline file access", "Auto-link to subjects"],
-  },
+const providerMeta: { id: AIProvider; label: string; desc: string; icon: React.ReactNode; needsKey: boolean; needsCli: boolean; defaultCli: string; checkCmd?: string }[] = [
+  { id: "openai", label: "OpenAI", desc: "GPT-4o, GPT-4o-mini", icon: <Bot size={18} />, needsKey: true, needsCli: false, defaultCli: "" },
+  { id: "anthropic", label: "Anthropic", desc: "Claude 3.5 Haiku, Sonnet", icon: <Sparkles size={18} />, needsKey: true, needsCli: false, defaultCli: "" },
+  { id: "claude-code", label: "Claude Code", desc: "Local Claude CLI", icon: <Terminal size={18} />, needsKey: false, needsCli: true, defaultCli: "claude", checkCmd: "claude" },
+  { id: "codex-cli", label: "Codex CLI", desc: "OpenAI Codex CLI", icon: <Zap size={18} />, needsKey: false, needsCli: true, defaultCli: "codex", checkCmd: "codex" },
+  { id: "opencode", label: "Opencode", desc: "Opencode CLI", icon: <KeyRound size={18} />, needsKey: false, needsCli: true, defaultCli: "opencode", checkCmd: "opencode" },
 ];
 
 function useStepNavigation(initial: OnboardingStep = "welcome") {
@@ -149,34 +113,34 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
     <div className="ob-step ob-step-welcome">
       <div className="ob-hero">
         <div className="ob-hero-icon">
-          <GraduationCap size={64} strokeWidth={1.2} />
+          <BrainCircuit size={56} strokeWidth={1.2} />
         </div>
-        <h1 className="ob-hero-title">Welcome to XMUM Scheduler</h1>
+        <h1 className="ob-hero-title">Welcome to XMUM OS</h1>
         <p className="ob-hero-subtitle">
-          Your all-in-one academic workspace. Let's get you set up in just a few steps.
+          Your <strong>AI-powered academic workspace</strong>. Timetable, Moodle, tasks, exams, and notes — unified and intelligent.
         </p>
       </div>
 
       <div className="ob-features-grid">
         <div className="ob-feature-card">
-          <Calendar size={24} />
-          <strong>Manage Timetable</strong>
-          <span>Import your class schedule and never miss a lecture</span>
+          <Calendar size={22} />
+          <strong>Smart Schedule</strong>
+          <span>Import from <code>ac.xmu.edu.my</code>, auto-generate events</span>
         </div>
         <div className="ob-feature-card">
-          <Cloud size={24} />
-          <strong>Sync Moodle</strong>
-          <span>Download course files and access them offline</span>
+          <Cloud size={22} />
+          <strong>Moodle Sync</strong>
+          <span>Course files linked to subjects, accessible offline</span>
         </div>
         <div className="ob-feature-card">
-          <ClipboardList size={24} />
-          <strong>Track Assignments</strong>
-          <span>Monitor deadlines, weights, and progress</span>
-        </div>
-        <div className="ob-feature-card">
-          <BrainCircuit size={24} />
+          <BrainCircuit size={22} />
           <strong>AI Assistant</strong>
-          <span>Get help with notes, assignments, and study plans</span>
+          <span>Plan, summarize, create tasks — all through chat</span>
+        </div>
+        <div className="ob-feature-card">
+          <Folder size={22} />
+          <strong>Local-first Notes</strong>
+          <span>Markdown notes saved to your filesystem</span>
         </div>
       </div>
 
@@ -203,6 +167,7 @@ function ProfileStep({
   const [name, setName] = useState(userProfile.displayName);
   const [preset, setPreset] = useState(userProfile.avatarPreset ?? PRESETS[0]);
   const [uploadedUrl, setUploadedUrl] = useState<string | undefined>(userProfile.avatarUrl);
+  const [error, setError] = useState("");
 
   const preview = {
     displayName: name || "Student",
@@ -210,10 +175,16 @@ function ProfileStep({
     avatarPreset: uploadedUrl ? undefined : preset,
   };
 
+  const isValid = name.trim().length > 0;
+
   function save() {
+    if (!isValid) {
+      setError("Please enter your name");
+      return;
+    }
     setUserProfile({
       ...userProfile,
-      displayName: name || userProfile.displayName,
+      displayName: name.trim(),
       avatarUrl: uploadedUrl,
       avatarPreset: uploadedUrl ? undefined : preset,
     });
@@ -224,7 +195,7 @@ function ProfileStep({
     <div className="ob-step ob-step-profile">
       <div className="ob-step-header">
         <h2>Set up your profile</h2>
-        <p>Personalize your experience with a name and avatar</p>
+        <p>Personalize your workspace with a name and avatar</p>
       </div>
 
       <div className="ob-profile-preview">
@@ -238,10 +209,12 @@ function ProfileStep({
           <input
             className="input"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => { setName(e.target.value); setError(""); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && isValid) save(); }}
             placeholder="Enter your name"
             autoFocus
           />
+          {error && <span className="field-error">{error}</span>}
         </div>
 
         <div className="field">
@@ -255,7 +228,6 @@ function ProfileStep({
                 title={p.seed}
               >
                 <Avatar profile={{ avatarPreset: p }} size={52} alt={p.seed} />
-                <span>{p.seed}</span>
               </button>
             ))}
             <button
@@ -264,11 +236,9 @@ function ProfileStep({
               title="Randomize"
             >
               <Dices size={24} />
-              <span>Random</span>
             </button>
             <label className="ob-avatar-option ob-avatar-upload" title="Upload photo">
               <Upload size={24} />
-              <span>Upload</span>
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
@@ -290,7 +260,80 @@ function ProfileStep({
         </div>
       </div>
 
-      <StepActions onBack={onBack} onNext={save} nextLabel="Continue" />
+      <StepActions onBack={onBack} onNext={save} nextLabel="Continue" nextVariant={isValid ? "primary" : "ghost"} />
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   STORAGE STEP — choose where to save notes locally
+   ═══════════════════════════════════════════ */
+function StorageStep({
+  notesDirectory, onPickNotesDirectory, onNext, onBack
+}: {
+  notesDirectory: string | undefined;
+  onPickNotesDirectory: () => void;
+  onNext: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className="ob-step ob-step-storage">
+      <div className="ob-step-header">
+        <h2>Choose your notes folder</h2>
+        <p>All notes are saved as local Markdown files. Pick a directory you control — sync it with Git, Dropbox, or anything else.</p>
+      </div>
+
+      <div className="ob-storage-callout">
+        <Info size={16} style={{ flexShrink: 0, marginTop: 2, color: "var(--accent)" }} />
+        <div>
+          <strong>Local-first by design.</strong> Your notes live on your filesystem as <code>.md</code> files, organized by subject. No cloud lock-in.
+        </div>
+      </div>
+
+      <div className="ob-form">
+        <div className="field">
+          <label className="field-label">Notes directory</label>
+          <div className="ob-input-with-btn">
+            <input
+              className="input"
+              value={notesDirectory ?? ""}
+              readOnly
+              placeholder="Default app data folder"
+            />
+            <button type="button" className="btn btn-primary" onClick={onPickNotesDirectory}>
+              <FolderOpen size={14} /> Browse
+            </button>
+          </div>
+          <span className="ob-input-hint">
+            <FileText size={12} /> {notesDirectory ? "Notes will be saved here" : "Using default location — you can change this later in Settings"}
+          </span>
+        </div>
+
+        <div className="ob-storage-preview">
+          <div className="ob-storage-tree">
+            <div className="ob-storage-tree-item">
+              <Folder size={14} /> <span>{notesDirectory ? notesDirectory.split("/").pop() || "Selected folder" : "App data folder"}</span>
+            </div>
+            <div className="ob-storage-tree-item nested">
+              <Folder size={14} /> <span>PHY211/</span>
+            </div>
+            <div className="ob-storage-tree-item nested-2">
+              <FileText size={14} /> <span>PHY211-overview.md</span>
+            </div>
+            <div className="ob-storage-tree-item nested-2">
+              <FileText size={14} /> <span>Lecture-1-notes.md</span>
+            </div>
+            <div className="ob-storage-tree-item nested">
+              <Folder size={14} /> <span>BSC128/</span>
+            </div>
+            <div className="ob-storage-tree-item nested-2">
+              <FileText size={14} /> <span>BSC128-overview.md</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <StepActions onBack={onBack} onNext={onNext} nextLabel="Continue" />
     </div>
   );
 }
@@ -385,12 +428,10 @@ function SemesterStep({
    TIMETABLE STEP
    ═══════════════════════════════════════════ */
 function TimetableStep({
-  selectedCalendar, timetablePreview, importHtmlFile, importBundledTimetable, applyTimetableImport, onNext, onBack
+  timetablePreview, importHtmlFile, applyTimetableImport, onNext, onBack
 }: {
-  selectedCalendar: AcademicOption;
   timetablePreview: ParsedClass[];
   importHtmlFile: (f: File | undefined) => void;
-  importBundledTimetable: () => void;
   applyTimetableImport: () => void;
   onNext: () => void;
   onBack: () => void;
@@ -437,14 +478,6 @@ function TimetableStep({
             <input type="file" accept=".html,.htm" onChange={handleFileInput} />
           </div>
 
-          <div className="ob-divider">
-            <span>or</span>
-          </div>
-
-          <button className="btn ob-btn-wide" onClick={importBundledTimetable}>
-            <FileCheck size={16} /> Use bundled {selectedCalendar.semester} timetable
-          </button>
-
           <div className="ob-help-text">
             <AlertCircle size={14} />
             <span>Go to <strong>ac.xmu.edu.my</strong> &rarr; Timetable &rarr; right-click &rarr; Save Page As HTML. Then drop it here.</span>
@@ -473,8 +506,8 @@ function TimetableStep({
 
       <StepActions
         onBack={onBack}
-        onNext={hasPreview ? handleApply : onNext}
-        nextLabel={hasPreview ? "Apply timetable" : "Skip for now"}
+        onNext={handleApply}
+        nextLabel={hasPreview ? "Apply timetable" : "Skip"}
         nextVariant={hasPreview ? "primary" : "ghost"}
       />
     </div>
@@ -485,14 +518,15 @@ function TimetableStep({
    MOODLE STEP
    ═══════════════════════════════════════════ */
 function MoodleStep({
-  moodle, setMoodle, moodlePassword, setMoodlePassword, moodleLogin,
+  subjects, moodle, setMoodle, moodlePassword, setMoodlePassword, moodleLogin,
   toggleMoodleCourse, applyMoodleSelection, syncMoodleFiles, onNext, onBack
 }: {
+  subjects: Subject[];
   moodle: MoodleState;
   setMoodle: (v: MoodleState | ((prev: MoodleState) => MoodleState)) => void;
   moodlePassword: string;
   setMoodlePassword: (v: string) => void;
-  moodleLogin: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
+  moodleLogin: (e: React.FormEvent<HTMLFormElement>, usernameOverride?: string) => Promise<void>;
   toggleMoodleCourse: (id: number) => void;
   applyMoodleSelection: () => void;
   syncMoodleFiles: () => Promise<void>;
@@ -500,13 +534,58 @@ function MoodleStep({
   onBack: () => void;
 }) {
   const [localUsername, setLocalUsername] = useState(moodle.username);
+  const [autoMatched, setAutoMatched] = useState<Set<number>>(new Set());
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    // Temporarily set username into moodle state so moodleLogin works
-    setMoodle((prev) => ({ ...prev, username: localUsername }));
-    await moodleLogin(e);
+    await moodleLogin(e, localUsername);
   };
+
+  // Auto-match Moodle courses with timetable subjects when catalog loads
+  useEffect(() => {
+    if (!moodle.connected || moodle.catalog.length === 0 || subjects.length === 0) return;
+
+    const matched = new Set<number>();
+    const subjectCodes = subjects.map((s) => s.code.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+    const subjectNames = subjects.map((s) => s.name);
+    const subjectLecturers = subjects.map((s) => s.lecturer.toLowerCase());
+
+    for (const course of moodle.catalog) {
+      const courseCode = (course.shortname ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const courseName = course.fullname;
+      const courseNameLower = courseName.toLowerCase();
+
+      const codeMatch = subjectCodes.some((sc) => {
+        if (sc.length < 2) return false;
+        return courseCode.includes(sc) || courseNameLower.includes(sc.toLowerCase());
+      });
+
+      if (codeMatch) { matched.add(course.id); continue; }
+
+      const exactNameMatch = subjectNames.some((sn) => {
+        const escaped = sn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const regex = new RegExp(`\\b${escaped}\\b`, "i");
+        return regex.test(courseName);
+      });
+
+      if (exactNameMatch) { matched.add(course.id); continue; }
+
+      const lecturerMatch = subjectLecturers.some((sl) => {
+        if (sl.length < 3) return false;
+        return courseNameLower.includes(sl);
+      });
+
+      if (lecturerMatch) { matched.add(course.id); }
+    }
+
+    setAutoMatched(matched);
+    if (matched.size > 0) {
+      setMoodle((prev) => ({
+        ...prev,
+        selectedCourseIds: Array.from(matched),
+      }));
+    }
+  }, [moodle.connected, moodle.catalog, subjects, setMoodle]);
 
   const handleApplyAndSync = async () => {
     applyMoodleSelection();
@@ -547,6 +626,9 @@ function MoodleStep({
           <button type="submit" className="btn btn-primary ob-btn-wide" disabled={moodle.loading}>
             {moodle.loading ? <><Loader2 size={16} className="spin" /> Signing in…</> : <><Cloud size={16} /> Sign in to Moodle</>}
           </button>
+          <button type="button" className="btn btn-ghost" style={{ alignSelf: "center", fontSize: "0.82rem" }} onClick={onNext}>
+            Skip for now <SkipForward size={12} />
+          </button>
         </form>
       ) : (
         <div className="ob-moodle-connected">
@@ -559,10 +641,18 @@ function MoodleStep({
           </div>
 
           <div className="field">
-            <label className="field-label">Select courses to sync</label>
+            <label className="field-label">
+              Select courses to sync
+              {autoMatched.size > 0 && (
+                <span className="ob-moodle-auto-match-badge">
+                  <Sparkles size={12} /> {autoMatched.size} matched with timetable
+                </span>
+              )}
+            </label>
             <div className="ob-course-list-compact">
               {moodle.catalog.map((course) => {
                 const selected = moodle.selectedCourseIds.includes(course.id);
+                const isAutoMatched = autoMatched.has(course.id);
                 return (
                   <button
                     key={course.id}
@@ -571,7 +661,10 @@ function MoodleStep({
                   >
                     <div className="ob-course-check">{selected && <CheckCircle2 size={16} />}</div>
                     <div className="ob-course-info">
-                      <strong>{course.fullname}</strong>
+                      <div className="ob-course-name-row">
+                        <strong>{course.fullname}</strong>
+                        {isAutoMatched && <span className="ob-course-match-tag">Matched</span>}
+                      </div>
                       <span>{course.shortname}</span>
                     </div>
                   </button>
@@ -596,16 +689,12 @@ function MoodleStep({
           </div>
         </div>
       )}
-
-      {!moodle.connected && (
-        <StepActions onBack={onBack} onNext={onNext} nextLabel="Skip for now" nextVariant="ghost" />
-      )}
     </div>
   );
 }
 
 /* ═══════════════════════════════════════════
-   AI STEP
+   AI STEP — with provider availability indicators
    ═══════════════════════════════════════════ */
 function AIStep({
   aiSettings, setAISettings, onNext, onBack
@@ -618,31 +707,57 @@ function AIStep({
   const [showKey, setShowKey] = useState(false);
   const meta = providerMeta.find((p) => p.id === aiSettings.provider)!;
 
+  // Determine availability for each provider
+  function getProviderStatus(p: typeof providerMeta[0]): "configured" | "available" | "needs-setup" {
+    if (p.needsKey && aiSettings.provider === p.id && aiSettings.apiKey) return "configured";
+    if (p.needsCli && aiSettings.provider === p.id && aiSettings.cliCommand) return "configured";
+    if (p.needsKey) return "needs-setup";
+    return "available";
+  }
+
   return (
     <div className="ob-step ob-step-ai">
       <div className="ob-step-header">
-        <h2>Set up AI assistant</h2>
-        <p>Choose an AI provider for the built-in chat assistant</p>
+        <h2>Configure AI providers</h2>
+        <p>Set up one or more providers. You can switch between them per-conversation in chat.</p>
+      </div>
+
+      <div className="ob-ai-info-callout">
+        <Info size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+        <span>Each conversation lets you choose which model to use. Configure your preferred providers below — you&apos;re not locked into one.</span>
       </div>
 
       <div className="ob-form">
         <div className="field">
-          <label className="field-label">AI Provider</label>
+          <label className="field-label">Select a provider to configure</label>
           <div className="ob-provider-grid">
-            {providerMeta.map((p) => (
-              <button
-                key={p.id}
-                className={`ob-provider-option ${aiSettings.provider === p.id ? "selected" : ""}`}
-                onClick={() => setAISettings({ ...aiSettings, provider: p.id })}
-              >
-                <div className="ob-provider-icon">{p.icon}</div>
-                <div className="ob-provider-info">
-                  <strong>{p.label}</strong>
-                  <span>{p.desc}</span>
-                </div>
-                {aiSettings.provider === p.id && <CheckCircle2 size={16} className="ob-check" />}
-              </button>
-            ))}
+            {providerMeta.map((p) => {
+              const status = getProviderStatus(p);
+              return (
+                <button
+                  key={p.id}
+                  className={`ob-provider-option ${aiSettings.provider === p.id ? "selected" : ""}`}
+                  onClick={() => setAISettings({ ...aiSettings, provider: p.id, cliCommand: p.defaultCli })}
+                >
+                  <div className="ob-provider-icon">{p.icon}</div>
+                  <div className="ob-provider-info">
+                    <strong>{p.label}</strong>
+                    <span>{p.desc}</span>
+                  </div>
+                  <div className="ob-provider-status">
+                    {status === "configured" && <CircleCheck size={15} className="ob-status-configured" />}
+                    {status === "available" && <CircleDot size={15} className="ob-status-available" />}
+                    {status === "needs-setup" && <CircleX size={15} className="ob-status-needs-setup" />}
+                  </div>
+                  {aiSettings.provider === p.id && <CheckCircle2 size={16} className="ob-check" />}
+                </button>
+              );
+            })}
+          </div>
+          <div className="ob-provider-legend">
+            <span><CircleCheck size={12} className="ob-status-configured" /> Configured</span>
+            <span><CircleDot size={12} className="ob-status-available" /> Available</span>
+            <span><CircleX size={12} className="ob-status-needs-setup" /> Needs key</span>
           </div>
         </div>
 
@@ -669,49 +784,87 @@ function AIStep({
 
         {meta.needsCli && (
           <div className="field">
-            <label className="field-label">CLI Command (optional)</label>
+            <label className="field-label">CLI Command</label>
             <input
               className="input"
               value={aiSettings.cliCommand}
               onChange={(e) => setAISettings({ ...aiSettings, cliCommand: e.target.value })}
-              placeholder={`e.g., ${meta.id === "claude-code" ? "claude" : meta.id === "codex-cli" ? "codex" : "opencode"}`}
+              placeholder={`e.g., ${meta.defaultCli}`}
             />
             <span className="ob-input-hint">
-              <Terminal size={12} /> Make sure the command is available in your PATH
+              <Terminal size={12} /> Make sure <code>{meta.defaultCli || "the command"}</code> is available in your PATH
             </span>
           </div>
         )}
       </div>
 
-      <StepActions onBack={onBack} onNext={onNext} nextLabel={meta.needsKey && !aiSettings.apiKey ? "Skip for now" : "Continue"} />
+      <StepActions onBack={onBack} onNext={onNext} nextLabel="Continue" />
     </div>
   );
 }
 
 /* ═══════════════════════════════════════════
-   TOUR STEP
+   GETTING STARTED STEP — emphasizes what to do first
    ═══════════════════════════════════════════ */
-function TourStep({ nav, onNext, onBack }: { nav: (p: import("../types").Page) => void; onNext: () => void; onBack: () => void }) {
+function GettingStartedStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   return (
-    <div className="ob-step ob-step-tour">
+    <div className="ob-step ob-step-getting-started">
       <div className="ob-step-header">
-        <h2>Take a quick tour</h2>
-        <p>Here's what each page does. Click any card to jump there after finishing.</p>
+        <h2>You&apos;re almost ready</h2>
+        <p>Here&apos;s how to make the most of your workspace from day one.</p>
       </div>
 
-      <div className="ob-tour-grid">
-        {tourCards.map((card) => (
-          <div key={card.page} className="ob-tour-card">
-            <div className="ob-tour-card-icon">{card.icon}</div>
-            <strong>{card.title}</strong>
-            <p>{card.desc}</p>
-            <ul>
-              {card.features.map((f, i) => (
-                <li key={i}><CheckCheck size={12} /> {f}</li>
-              ))}
-            </ul>
+      <div className="ob-getting-started-hero">
+        <div className="ob-gs-card ob-gs-card-primary">
+          <div className="ob-gs-card-icon"><MessageSquare size={24} /></div>
+          <div className="ob-gs-card-content">
+            <strong>Start with the AI chat</strong>
+            <p>Your dashboard AI chat is the quickest way to interact. Try asking it to plan your week, summarize a note, or create tasks for you.</p>
+            <div className="ob-gs-commands">
+              <code>/plan</code>
+              <code>/summarize-note</code>
+              <code>/create-assignment</code>
+            </div>
           </div>
-        ))}
+        </div>
+      </div>
+
+      <div className="ob-gs-grid">
+        <div className="ob-gs-card">
+          <div className="ob-gs-card-icon"><FileText size={20} /></div>
+          <div className="ob-gs-card-content">
+            <strong>Take notes in Knowledge</strong>
+            <span>Create notes per subject, organize in folders. Notes are saved as Markdown.</span>
+          </div>
+        </div>
+        <div className="ob-gs-card">
+          <div className="ob-gs-card-icon"><ClipboardList size={20} /></div>
+          <div className="ob-gs-card-content">
+            <strong>Track tasks & deadlines</strong>
+            <span>Use the kanban board or ask AI to create tasks for you.</span>
+          </div>
+        </div>
+        <div className="ob-gs-card">
+          <div className="ob-gs-card-icon"><Trophy size={20} /></div>
+          <div className="ob-gs-card-content">
+            <strong>Log exams & grades</strong>
+            <span>Track your assessments and calculate targets for future exams.</span>
+          </div>
+        </div>
+        <div className="ob-gs-card">
+          <div className="ob-gs-card-icon"><FileText size={20} /></div>
+          <div className="ob-gs-card-content">
+            <strong>Use @mentions in chat</strong>
+            <span>Type <code>@</code> to attach a Moodle file or note as context for the AI.</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="ob-gs-tip">
+        <Sparkles size={16} style={{ color: "var(--accent)", flexShrink: 0 }} />
+        <span>
+          <strong>Pro tip:</strong> The AI can create, update, or delete tasks, exams, notes, and calendar events — all from a single chat message.
+        </span>
       </div>
 
       <StepActions onBack={onBack} onNext={onNext} nextLabel="Finish setup" />
@@ -722,7 +875,7 @@ function TourStep({ nav, onNext, onBack }: { nav: (p: import("../types").Page) =
 /* ═══════════════════════════════════════════
    COMPLETE STEP
    ═══════════════════════════════════════════ */
-function CompleteStep({ userProfile, nav, onFinish }: { userProfile: UserProfile; nav: (p: import("../types").Page) => void; onFinish: () => void }) {
+function CompleteStep({ userProfile, nav, onFinish, onStartTour }: { userProfile: UserProfile; nav: (p: import("../types").Page) => void; onFinish: () => void; onStartTour: () => void }) {
   const name = userProfile.displayName || "there";
 
   function finishAndGo(page: import("../types").Page) {
@@ -734,30 +887,19 @@ function CompleteStep({ userProfile, nav, onFinish }: { userProfile: UserProfile
     <div className="ob-step ob-step-complete">
       <div className="ob-complete-hero">
         <div className="ob-complete-icon">
-          <PartyPopper size={72} strokeWidth={1.2} />
+          <PartyPopper size={64} strokeWidth={1.2} />
         </div>
-        <h2>You're all set, {name}!</h2>
-        <p>Your academic workspace is ready. Where would you like to start?</p>
+        <h2>You&apos;re all set, {name}!</h2>
+        <p>Let&apos;s take a quick tour of your workspace — it only takes a minute.</p>
       </div>
 
       <div className="ob-complete-actions">
-        <button className="btn btn-primary ob-btn-xl" onClick={() => finishAndGo("dashboard")}>
-          <LayoutDashboard size={18} /> Open Dashboard
+        <button className="btn btn-primary ob-btn-xl" onClick={onStartTour}>
+          <Compass size={18} /> Start the interactive tour
         </button>
-        <div className="ob-complete-grid">
-          <button className="btn ob-complete-option" onClick={() => finishAndGo("calendar")}>
-            <Calendar size={16} /> Calendar
-          </button>
-          <button className="btn ob-complete-option" onClick={() => finishAndGo("knowledge")}>
-            <BookOpen size={16} /> Knowledge
-          </button>
-          <button className="btn ob-complete-option" onClick={() => finishAndGo("assignments")}>
-            <ClipboardList size={16} /> Assignments
-          </button>
-          <button className="btn ob-complete-option" onClick={() => finishAndGo("settings")}>
-            <Settings size={16} /> Settings
-          </button>
-        </div>
+        <button className="btn btn-ghost" style={{ fontSize: "0.84rem" }} onClick={() => finishAndGo("dashboard")}>
+          Skip tour, go to Dashboard <ArrowRight size={14} />
+        </button>
       </div>
     </div>
   );
@@ -767,30 +909,22 @@ function CompleteStep({ userProfile, nav, onFinish }: { userProfile: UserProfile
    STEP ACTIONS
    ═══════════════════════════════════════════ */
 function StepActions({
-  onBack, onNext, nextLabel = "Continue", nextVariant = "primary", showSkip = false, onSkip
+  onBack, onNext, nextLabel = "Continue", nextVariant = "primary", nextDisabled = false
 }: {
   onBack: () => void;
   onNext: () => void;
   nextLabel?: string;
   nextVariant?: "primary" | "ghost";
-  showSkip?: boolean;
-  onSkip?: () => void;
+  nextDisabled?: boolean;
 }) {
   return (
     <div className="ob-step-actions">
       <button className="btn" onClick={onBack}>
         <ArrowLeft size={14} /> Back
       </button>
-      <div className="row" style={{ gap: 8 }}>
-        {showSkip && onSkip && (
-          <button className="btn btn-ghost" onClick={onSkip}>
-            <SkipForward size={14} /> Skip
-          </button>
-        )}
-        <button className={`btn ${nextVariant === "primary" ? "btn-primary" : ""}`} onClick={onNext}>
-          {nextLabel} <ArrowRight size={14} />
-        </button>
-      </div>
+      <button className={`btn ${nextVariant === "primary" ? "btn-primary" : ""}`} onClick={onNext} disabled={nextDisabled}>
+        {nextLabel} <ArrowRight size={14} />
+      </button>
     </div>
   );
 }
@@ -799,16 +933,11 @@ function StepActions({
    MAIN ONBOARDING COMPONENT
    ═══════════════════════════════════════════ */
 export function Onboarding(props: OnboardingProps) {
-  const { step, next, back, goTo, canGoBack, progress } = useStepNavigation("welcome");
+  const { step, idx, next, back, goTo, canGoBack, progress } = useStepNavigation("welcome");
 
   function finish() {
     props.setUserProfile({ ...props.userProfile, onboardingComplete: true });
     props.onComplete();
-  }
-
-  function skipAll() {
-    props.setUserProfile({ ...props.userProfile, onboardingComplete: true });
-    props.onSkip();
   }
 
   const selectedCalendar = props.calendarOptions.find((o) => o.id === props.selectedCalendarId) ?? props.calendarOptions[0];
@@ -822,10 +951,26 @@ export function Onboarding(props: OnboardingProps) {
         </div>
       </div>
 
+      {/* Step breadcrumb */}
+      {step !== "welcome" && step !== "complete" && (
+        <div className="ob-breadcrumb">
+          {STEPS.map((s, i) => {
+            const isActive = s.id === step;
+            const isDone = idx > i;
+            return (
+              <div key={s.id} className={`ob-breadcrumb-item ${isActive ? "active" : ""} ${isDone ? "done" : ""}`}>
+                {s.icon}
+                <span>{s.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Skip button */}
-      {step !== "complete" && (
-        <button className="ob-skip-btn" onClick={skipAll}>
-          Skip setup <ChevronRight size={14} />
+      {step !== "welcome" && step !== "complete" && (
+        <button className="ob-skip-btn" onClick={() => goTo("complete")}>
+          Skip all <SkipForward size={12} />
         </button>
       )}
 
@@ -837,6 +982,15 @@ export function Onboarding(props: OnboardingProps) {
           <ProfileStep
             userProfile={props.userProfile}
             setUserProfile={props.setUserProfile}
+            onNext={next}
+            onBack={back}
+          />
+        )}
+
+        {step === "storage" && (
+          <StorageStep
+            notesDirectory={props.notesDirectory}
+            onPickNotesDirectory={props.onPickNotesDirectory}
             onNext={next}
             onBack={back}
           />
@@ -858,10 +1012,8 @@ export function Onboarding(props: OnboardingProps) {
 
         {step === "timetable" && (
           <TimetableStep
-            selectedCalendar={selectedCalendar}
             timetablePreview={props.timetablePreview}
             importHtmlFile={props.importHtmlFile}
-            importBundledTimetable={props.importBundledTimetable}
             applyTimetableImport={props.applyTimetableImport}
             onNext={next}
             onBack={back}
@@ -870,6 +1022,7 @@ export function Onboarding(props: OnboardingProps) {
 
         {step === "moodle" && (
           <MoodleStep
+            subjects={props.subjects}
             moodle={props.moodle}
             setMoodle={props.setMoodle}
             moodlePassword={props.moodlePassword}
@@ -883,7 +1036,7 @@ export function Onboarding(props: OnboardingProps) {
           />
         )}
 
-        {step === "ai" && (
+        {step === "ai-setup" && (
           <AIStep
             aiSettings={props.aiSettings}
             setAISettings={props.setAISettings}
@@ -892,8 +1045,8 @@ export function Onboarding(props: OnboardingProps) {
           />
         )}
 
-        {step === "tour" && (
-          <TourStep nav={props.nav} onNext={next} onBack={back} />
+        {step === "getting-started" && (
+          <GettingStartedStep onNext={next} onBack={back} />
         )}
 
         {step === "complete" && (
@@ -901,6 +1054,7 @@ export function Onboarding(props: OnboardingProps) {
             userProfile={props.userProfile}
             nav={props.nav}
             onFinish={finish}
+            onStartTour={props.onStartTour}
           />
         )}
       </div>
@@ -911,7 +1065,7 @@ export function Onboarding(props: OnboardingProps) {
           {STEP_ORDER.map((s, i) => (
             <div
               key={s}
-              className={`ob-dot ${s === step ? "active" : STEP_ORDER.indexOf(step) > i ? "done" : ""}`}
+              className={`ob-dot ${s === step ? "active" : idx > i ? "done" : ""}`}
               title={STEPS.find((x) => x.id === s)?.label}
             />
           ))}

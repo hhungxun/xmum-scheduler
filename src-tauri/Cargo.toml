@@ -1,6 +1,6 @@
 [package]
 name = "xmum-scheduler"
-version = "1.0.0"
+version = "1.1.0"
 description = "XMUM Student Scheduler and Knowledge Workspace"
 authors = [""]
 license = "MIT"

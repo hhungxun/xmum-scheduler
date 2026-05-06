@@ -1,7 +1,8 @@
 import { useState, useMemo, memo, useCallback } from "react";
 import { GraduationCap, CheckSquare, Calendar as CalendarIcon, Trash2, Upload, Paperclip, X, Plus, Search, ArrowUpDown, X as XIcon } from "lucide-react";
-import type { Subject, ExamRecord, ExamKind, AcademicOption, MoodleFile } from "../types";
+import type { Subject, ExamRecord, ExamKind, ExamStatus, AcademicOption, MoodleFile } from "../types";
 import { examKindLabels, toIsoDate, isDateInRange, moodleFileKey, localAssetHref } from "../lib/utils";
+import { openMoodleFile } from "../lib/api";
 
 function hexToRgba(hex: string, alpha: number): string {
   hex = hex.replace("#", "");
@@ -45,6 +46,7 @@ export function ExamsPage({
     score: 0,
     maxScore: 100,
     notes: "",
+    status: "not-started" as ExamStatus,
     relatedFileIds: [] as string[],
   });
 
@@ -123,7 +125,7 @@ export function ExamsPage({
     setDraft({
       title: "", subjectId: activeSubjectId || defaultSubjectId, kind: "quiz",
       date: toIsoDate(new Date()), weight: 10, score: 0, maxScore: 100,
-      notes: "", relatedFileIds: [],
+      notes: "", status: "not-started", relatedFileIds: [],
     });
     setModalOpen(true);
   }
@@ -418,6 +420,15 @@ export function ExamsPage({
                 </div>
               </div>
               <div className="exam-field">
+                <label>Status</label>
+                <select className="select" value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value as ExamStatus })}>
+                  <option value="not-started">Not started</option>
+                  <option value="not-completed">Not completed</option>
+                  <option value="completed">Completed</option>
+                  <option value="released">Released</option>
+                </select>
+              </div>
+              <div className="exam-field">
                 <label>Notes</label>
                 <textarea className="textarea" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Topics, corrections, reflection" />
               </div>
@@ -478,6 +489,9 @@ const ExamCard = memo(function ExamCard({
   const handleNotesChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     updateExam(exam.id, { notes: e.target.value });
   }, [updateExam, exam.id]);
+  const handleStatusChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    updateExam(exam.id, { status: e.target.value as ExamRecord["status"] });
+  }, [updateExam, exam.id]);
   const handleDelete = useCallback(() => { deleteExam(exam.id); }, [deleteExam, exam.id]);
   const handleRemoveAttachment = useCallback((attachmentId: string) => {
     removeExamAttachment(exam.id, attachmentId);
@@ -512,6 +526,15 @@ const ExamCard = memo(function ExamCard({
           <div className="exam-field">
             <label>Max Score</label>
             <input className="input" type="number" min={1} value={exam.maxScore} onChange={handleMaxScoreChange} />
+          </div>
+          <div className="exam-field">
+            <label>Status</label>
+            <select className="select" value={exam.status ?? "not-started"} onChange={handleStatusChange}>
+              <option value="not-started">Not started</option>
+              <option value="not-completed">Not completed</option>
+              <option value="completed">Completed</option>
+              <option value="released">Released</option>
+            </select>
           </div>
         </div>
         <textarea className="textarea" value={exam.notes} onChange={handleNotesChange} placeholder="Corrections and notes" />
@@ -567,7 +590,7 @@ function RelatedFileLinks({ files, selectedIds }: { files: MoodleFile[]; selecte
   return (
     <div className="related-files">
       {related.map((file) => (
-        <a key={moodleFileKey(file)} href={localAssetHref(file.localUrl ?? file.fileurl)} target="_blank" rel="noreferrer">
+        <a key={moodleFileKey(file)} href={localAssetHref(file.localUrl ?? file.fileurl)} target="_blank" rel="noreferrer" onClick={(e) => openMoodleFile(file, e)}>
           <Paperclip size={12} /> {file.filename}
         </a>
       ))}

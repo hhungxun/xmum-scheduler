@@ -1,0 +1,77 @@
+name: 'publish'
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            args: ''
+          - platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'XMUM Scheduler ${{ github.ref_name }}'
+          releaseBody: |
+            ## What's New
+
+            - Revamped onboarding experience with premium guided setup
+            - Multimodal AI chat — attach images via paste, drag-and-drop, or file picker
+            - AI can interact with calendar, notes, assignments, and exams via action blocks
+            - Per-conversation model selection (no more global active provider)
+            - Improved interactive tour with element highlighting
+            - Local-first notes synced as Markdown to user-chosen directory
+            - Chat folders with drag-and-drop organization
+            - Better dashboard layout and subject card styling
+
+            ## Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Windows | `.msi` installer |
+            | macOS (Apple Silicon) | `.dmg` (aarch64) |
+            | macOS (Intel) | `.dmg` (x86_64) |
+            | Linux | `.deb` / `.AppImage` |
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

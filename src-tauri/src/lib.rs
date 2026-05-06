@@ -60,6 +60,7 @@ pub struct KnowledgeSyncResult {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::academic_calendar,
             commands::moodle_login,
@@ -70,6 +71,7 @@ pub fn run() {
             commands::get_moodle_file,
             commands::get_upload_file,
             commands::ai_chat,
+            commands::pick_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

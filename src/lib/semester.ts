@@ -1,47 +1,8 @@
 import type { SemesterData, Subject } from "../types";
-import { uid, makeNote } from "./utils";
+import { makeMySpaceSubject } from "./utils";
 
 export function defaultSemesterData(): SemesterData {
-  const welcomeSubject: Subject = {
-    id: uid("subject"),
-    code: "START",
-    name: "Getting Started",
-    lecturer: "",
-    color: "#4f46e5",
-    courseInfo: "# Getting Started\n\nWelcome to XMUM OS.",
-    folders: [],
-    notes: [
-      makeNote("Welcome", `# Welcome to XMUM OS
-
-This is your academic workspace. Here's how to get started:
-
-## 1. Import your timetable
-Go to **Settings** and import your semester timetable HTML file. This will create all your subjects automatically.
-
-## 2. Take notes
-Use the **Knowledge** page to write lecture notes. You can use:
-- **Markdown** formatting
-- **LaTeX** math like $E = mc^2$
-- **Wiki links** with [[Note Name]]
-
-## 3. Track assignments
-In **Assignments**, create and drag tasks across the Kanban board (Todo → Doing → Submitted → Graded).
-
-## 4. Plan with AI
-Use the chat assistant to:
-- Plan your week with "/plan"
-- Create assignments with "/create-assignment"
-- Schedule study sessions with "/schedule-study"
-
-## 5. Manage exams
-In **Exams**, track your scores and see your weighted average across the semester.
-
-## Quick Tips
-- Type "/" in the chat to see available AI commands
-- Notes auto-sync to the data/knowledge folder as markdown
-- Each semester has completely isolated data — switch freely in Settings`),
-    ],
-  };
+  const welcomeSubject: Subject = makeMySpaceSubject();
   return {
     subjects: [welcomeSubject],
     events: [],

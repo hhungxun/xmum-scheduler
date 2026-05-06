@@ -1,6 +1,6 @@
 export type Page = "dashboard" | "calendar" | "knowledge" | "assignments" | "exams" | "moodle" | "settings";
 export type Theme = "light" | "dark" | "typewriter" | "modern" | "cyberpunk";
-export type Status = "todo" | "progress" | "submitted" | "graded";
+export type Status = "todo" | "progress" | "done";
 export type StudentTrack = "undergraduate" | "foundation";
 export type AIProvider = "openai" | "anthropic" | "claude-code" | "codex-cli" | "opencode";
 
@@ -62,9 +62,12 @@ export type Assignment = {
   description: string;
   relatedFileIds?: string[];
   createdAt?: string;
+  start?: string;
+  end?: string;
 };
 
 export type ExamKind = "quiz" | "midterm" | "final" | "lab" | "other";
+export type ExamStatus = "not-started" | "not-completed" | "completed" | "released";
 
 export type LocalFileRef = {
   id: string;
@@ -85,14 +88,21 @@ export type ExamRecord = {
   score: number;
   maxScore: number;
   notes: string;
+  status?: ExamStatus;
   relatedFileIds?: string[];
   attachments: LocalFileRef[];
+};
+
+export type ChatImage = {
+  data: string; // base64 encoded
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 };
 
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  images?: ChatImage[];
 };
 
 export type Conversation = {
@@ -101,7 +111,15 @@ export type Conversation = {
   createdAt: string;
   updatedAt: string;
   model: string;
+  provider?: AIProvider;
   messages: ChatMessage[];
+  folderId?: string;
+};
+
+export type ChatFolder = {
+  id: string;
+  name: string;
+  createdAt: string;
 };
 
 export type AcademicOption = {
@@ -185,4 +203,5 @@ export type UserProfile = {
   avatarUrl?: string;
   avatarPreset?: AvatarPreset;
   onboardingComplete: boolean;
+  notesDirectory?: string;
 };

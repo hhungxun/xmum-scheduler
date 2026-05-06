@@ -1,10 +1,11 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import {
   ChevronDown, ChevronRight, ChevronUp, Folder, KeyRound, LogOut, RefreshCw, Trash2,
   Search, List, Columns, ArrowUpDown, X,
 } from "lucide-react";
 import type { MoodleState, Subject, MoodleFile, MoodleSyncedCourse } from "../types";
 import { formatFileSize, moodleFileKey, localAssetHref } from "../lib/utils";
+import { openMoodleFile } from "../lib/api";
 import { Field } from "../components/Field";
 
 export function MoodlePage({
@@ -29,10 +30,6 @@ export function MoodlePage({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [viewCompact, setViewCompact] = useState(false);
 
-  useEffect(() => {
-    setPickerOpen(!(moodle.selectedCourseIds.length || moodle.files.length));
-  }, [moodle.selectedCourseIds.length, moodle.files.length]);
-
   const filteredFiles = useMemo(() => {
     let list = moodle.files;
     if (searchQuery.trim()) {
@@ -42,14 +39,20 @@ export function MoodlePage({
     if (fileTypeFilter !== "all") {
       list = list.filter((f) => {
         const ext = f.filename.split(".").pop()?.toLowerCase() ?? "";
+        const isPdf = ext === "pdf";
+        const isDoc = ["doc", "docx"].includes(ext);
+        const isSheet = ["xls", "xlsx", "csv"].includes(ext);
+        const isSlide = ["ppt", "pptx"].includes(ext);
+        const isImage = ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
+        const isHtml = ["html", "htm", "xml"].includes(ext);
         switch (fileTypeFilter) {
-          case "pdf": return ext === "pdf";
-          case "doc": return ["doc", "docx"].includes(ext);
-          case "sheet": return ["xls", "xlsx", "csv"].includes(ext);
-          case "slide": return ["ppt", "pptx"].includes(ext);
-          case "image": return ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
-          case "html": return ["html", "htm", "xml"].includes(ext);
-          case "other": return true;
+          case "pdf": return isPdf;
+          case "doc": return isDoc;
+          case "sheet": return isSheet;
+          case "slide": return isSlide;
+          case "image": return isImage;
+          case "html": return isHtml;
+          case "other": return !isPdf && !isDoc && !isSheet && !isSlide && !isImage && !isHtml;
           default: return true;
         }
       });
@@ -258,6 +261,7 @@ function MoodleCourseTree({ course, compact }: { course: MoodleSyncedCourse; com
                       href={localAssetHref(file.localUrl ?? file.fileurl)}
                       target="_blank"
                       rel="noreferrer"
+                      onClick={(e) => openMoodleFile(file, e)}
                     >
                       <Trash2 size={14} style={{ opacity: 0 }} />
                       <span>

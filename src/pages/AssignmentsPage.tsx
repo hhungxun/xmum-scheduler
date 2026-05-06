@@ -1,17 +1,18 @@
 import { useState, useMemo, memo, useCallback } from "react";
 import {
   Trash2, Paperclip, FileText, Search, X, Calendar, SlidersHorizontal,
-  ArrowUpDown, Layers, LayoutGrid, List, Columns, Plus,
+  ArrowUpDown, Layers, LayoutGrid, List, Plus,
 } from "lucide-react";
 import type { Subject, Assignment, Status, MoodleFile, AcademicOption, Priority } from "../types";
 import { statusLabels, toIsoDate, moodleFileKey, localAssetHref } from "../lib/utils";
+import { openMoodleFile } from "../lib/api";
 
 /* ─── Filter types ─── */
 type FilterCondition = "is" | "is_not" | "contains" | "before" | "after" | "on_or_before" | "on_or_after" | "greater_than" | "less_than";
 type FilterProperty = "title" | "course" | "status" | "due" | "weight" | "hasAttachment" | "priority";
 type SortProperty = "due" | "weight" | "title" | "created" | "priority";
 type GroupProperty = "status" | "course" | "priority" | "dueRange";
-type ViewLayout = "list" | "board" | "table";
+type ViewLayout = "list" | "board";
 type View = { id: string; name: string; filters: FilterRule[]; sorts: SortRule[]; group: GroupProperty | null; layout: ViewLayout; };
 
 interface FilterRule { id: string; property: FilterProperty; condition: FilterCondition; value: string; }
@@ -20,14 +21,20 @@ interface SortRule { id: string; property: SortProperty; direction: "asc" | "des
 const SAVED_VIEWS_KEY = "xmum.v3.assignmentViews";
 
 function loadViews(): View[] {
-  try { const raw = localStorage.getItem(SAVED_VIEWS_KEY); return raw ? JSON.parse(raw) : defaultViews(); }
+  try {
+    const raw = localStorage.getItem(SAVED_VIEWS_KEY);
+    if (!raw) return defaultViews();
+    const parsed: View[] = JSON.parse(raw);
+    const migrated = parsed.map((v) => (v.layout as string) === "table" ? { ...v, layout: "list" as ViewLayout } : v);
+    return migrated;
+  }
   catch { return defaultViews(); }
 }
 function defaultViews(): View[] {
   return [
-    { id: "all", name: "All", filters: [], sorts: [{ id: "s0", property: "due", direction: "asc" }], group: null, layout: "list" },
+    { id: "all", name: "All", filters: [], sorts: [{ id: "s0", property: "due", direction: "asc" }], group: null, layout: "board" },
     { id: "due-soon", name: "Due soon", filters: [{ id: "f0", property: "due", condition: "on_or_before", value: toIsoDate(new Date(Date.now() + 7 * 86400000)) }], sorts: [{ id: "s0", property: "due", direction: "asc" }], group: "status", layout: "board" },
-    { id: "completed", name: "Completed", filters: [{ id: "f0", property: "status", condition: "is", value: "graded" }], sorts: [{ id: "s0", property: "due", direction: "desc" }], group: "course", layout: "board" },
+    { id: "completed", name: "Completed", filters: [{ id: "f0", property: "status", condition: "is", value: "done" }], sorts: [{ id: "s0", property: "due", direction: "desc" }], group: "course", layout: "board" },
     { id: "this-week", name: "This week", filters: [{ id: "f0", property: "due", condition: "on_or_before", value: toIsoDate(new Date(Date.now() + 7 * 86400000)) }], sorts: [{ id: "s0", property: "due", direction: "asc" }], group: null, layout: "list" },
   ];
 }
@@ -64,6 +71,7 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 function dueRangeLabel(due: string): string {
+  if (!due) return "No due date";
   const today = new Date(); today.setHours(0,0,0,0);
   const d = new Date(`${due}T00:00:00`);
   const diff = Math.floor((+d - +today) / 86400000);
@@ -72,6 +80,17 @@ function dueRangeLabel(due: string): string {
   if (diff <= 7) return "This week";
   if (diff <= 14) return "Next week";
   return "Later";
+}
+
+function relativeDueLabel(due: string): string {
+  if (!due) return "No due date";
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(`${due}T00:00:00`);
+  const diff = Math.floor((+d - +today) / 86400000);
+  if (diff < 0) return `${Math.abs(diff)}d overdue`;
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  return `In ${diff} days`;
 }
 
 function dueRangeOrder(label: string): number {
@@ -105,6 +124,7 @@ function applyFilters(assignments: Assignment[], rules: FilterRule[], subjects: 
           return true;
         case "due":
           if (!rule.value) return true;
+          if (!a.due) return false;
           if (rule.condition === "before") return a.due < rule.value;
           if (rule.condition === "after") return a.due > rule.value;
           if (rule.condition === "on_or_before") return a.due <= rule.value;
@@ -133,7 +153,7 @@ function applySorts(list: Assignment[], sorts: SortRule[]): Assignment[] {
     items.sort((a, b) => {
       let cmp = 0;
       switch (sort.property) {
-        case "due": cmp = a.due.localeCompare(b.due); break;
+        case "due": cmp = (a.due || "").localeCompare(b.due || ""); break;
         case "weight": cmp = a.weight - b.weight; break;
         case "title": cmp = a.title.localeCompare(b.title); break;
         case "created": cmp = (a.createdAt ?? a.id).localeCompare(b.createdAt ?? b.id); break;
@@ -170,6 +190,7 @@ export function AssignmentsPage({
   const [sortOpen, setSortOpen] = useState(false);
   const [groupOpen, setGroupOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const activeView = views.find((v) => v.id === activeViewId) ?? views[0];
 
@@ -228,8 +249,22 @@ export function AssignmentsPage({
   const layoutIcon: Record<ViewLayout, React.ReactNode> = {
     list: <List size={14} />,
     board: <LayoutGrid size={14} />,
-    table: <Columns size={14} />,
   };
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function clearSelection() { setSelectedIds(new Set()); }
+  function bulkDelete() {
+    if (!confirm(`Delete ${selectedIds.size} selected tasks?`)) return;
+    selectedIds.forEach((id) => deleteAssignment(id));
+    clearSelection();
+  }
 
   return (
     <div className="assignments-page">
@@ -273,7 +308,7 @@ export function AssignmentsPage({
 
           {/* Layout toggle */}
           <div className="row" style={{ gap: 4 }}>
-            {(["list", "board", "table"] as ViewLayout[]).map((l) => (
+            {(["list", "board"] as ViewLayout[]).map((l) => (
               <button key={l} className={`btn ${activeView.layout === l ? "btn-primary" : ""}`} onClick={() => updateLayout(l)} title={l}>
                 {layoutIcon[l]}
               </button>
@@ -317,30 +352,68 @@ export function AssignmentsPage({
         </div>
       )}
 
+      {/* Bulk actions */}
+      {selectedIds.size > 0 && (
+        <div className="card" style={{ padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexShrink: 0, background: "var(--highlight)" }}>
+          <span style={{ fontSize: "0.84rem", fontWeight: 500 }}>{selectedIds.size} selected</span>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn btn-ghost" style={{ height: 28, fontSize: "0.8rem" }} onClick={clearSelection}>Clear</button>
+            <button className="btn btn-danger" style={{ height: 28, fontSize: "0.8rem" }} onClick={bulkDelete}><Trash2 size={12} /> Delete</button>
+          </div>
+        </div>
+      )}
+
       {/* List layout */}
       {activeView.layout === "list" && (
-        <div className="grid" style={{ gap: 8, overflowY: "auto", minHeight: 0, flex: 1 }}>
-          {filtered.length === 0 ? (
-            <div className="empty">No assignments match these filters.</div>
-          ) : (
-            filtered.map((a) => {
-              const subj = subjects.find((s) => s.id === a.subjectId);
-              const subjColor = subj?.color ?? "#888888";
-              return (
-                <div key={a.id} className="agenda-row" style={{ gridTemplateColumns: "auto 1fr auto auto auto auto auto", cursor: "pointer" }} onClick={() => setDetailId(a.id)}>
-                  <span className="agenda-dot" style={{ background: subjColor }} />
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>{a.title}</span>
-                  <span className="tag" style={{ background: hexToRgba(subjColor, 0.15), color: subjColor, border: `1px solid ${hexToRgba(subjColor, 0.3)}`, fontSize: "0.76rem" }}>{subj?.code ?? "—"}</span>
-                  <span className="muted" style={{ fontSize: "0.8rem" }}>{a.due}</span>
-                  <span className="tag" style={{ fontSize: "0.76rem" }}>{statusLabels[a.status]}</span>
-                  <span className="muted" style={{ fontSize: "0.78rem" }}>{a.weight}%</span>
-                  <button className="btn btn-ghost btn-danger" style={{ height: 28, padding: "0 6px" }} onClick={(e) => { e.stopPropagation(); deleteAssignment(a.id); }}>
-                    <Trash2 size={12} />
-                  </button>
+        <div className="list-layout" style={{ overflowY: "auto", minHeight: 0, flex: 1 }}>
+          {filtered.map((a) => {
+            const subj = subjects.find((s) => s.id === a.subjectId);
+            const subjColor = subj?.color ?? "#888888";
+            const priority = a.priority ?? "medium";
+            const priorityColor = priority === "high" ? "#dc2626" : priority === "low" ? "#6b7280" : "#f59e0b";
+            const hasFiles = (a.relatedFileIds?.length ?? 0) > 0;
+            const relativeDue = relativeDueLabel(a.due);
+            const isOverdue = relativeDue.includes("overdue");
+            return (
+              <div
+                key={a.id}
+                className="list-task-row"
+                onClick={() => setDetailId(a.id)}
+              >
+                <div className="list-task-priority" style={{ background: priorityColor }} />
+                <div className="list-task-content">
+                  <div className="list-task-top">
+                    <span className="agenda-dot" style={{ background: subjColor }} />
+                    <span className="list-task-title">{a.title}</span>
+                    {hasFiles && <Paperclip size={12} className="muted" />}
+                  </div>
+                  <div className="list-task-bottom">
+                    <span className="tag" style={{ background: hexToRgba(subjColor, 0.12), color: subjColor, border: `1px solid ${hexToRgba(subjColor, 0.25)}`, fontSize: "0.72rem" }}>{subj?.code ?? "—"}</span>
+                    <span className="tag" style={{ fontSize: "0.72rem" }}>{statusLabels[a.status]}</span>
+                    <span className={`tag ${isOverdue ? "overdue-tag" : ""}`} style={{ fontSize: "0.72rem" }}>{a.due ? `${a.due} · ${relativeDue}` : relativeDue}</span>
+                    {a.weight > 0 && <span className="muted" style={{ fontSize: "0.72rem" }}>{a.weight}%</span>}
+                  </div>
                 </div>
-              );
-            })
+                <button
+                  className="btn btn-ghost btn-danger"
+                  style={{ height: 28, padding: "0 6px", flexShrink: 0, opacity: 0.6, marginRight: 8 }}
+                  onClick={(e) => { e.stopPropagation(); deleteAssignment(a.id); }}
+                  title="Delete"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            );
+          })}
+          {filtered.length === 0 && (
+            <div className="empty">No tasks match these filters.</div>
           )}
+          <ListAddTask
+            subjects={subjects}
+            activeSubjectId={activeSubjectId}
+            defaultSubjectId={defaultSubjectId}
+            addAssignment={addAssignment}
+          />
         </div>
       )}
 
@@ -357,6 +430,7 @@ export function AssignmentsPage({
                 deleteAssignment={deleteAssignment}
                 addAssignment={addAssignment} activeSubjectId={activeSubjectId} defaultSubjectId={defaultSubjectId}
                 onOpenDetail={setDetailId}
+                selectedIds={selectedIds} toggleSelect={toggleSelect}
               />
             ))
           ) : (
@@ -372,38 +446,24 @@ export function AssignmentsPage({
                   addAssignment={addAssignment} activeSubjectId={activeSubjectId} defaultSubjectId={defaultSubjectId}
                   statusOverride={status}
                   onOpenDetail={setDetailId}
+                  selectedIds={selectedIds} toggleSelect={toggleSelect}
                 />
               );
             })
           )}
-          {filtered.length === 0 && <div className="empty">No assignments match these filters.</div>}
         </div>
       )}
-
-      {/* Table layout */}
-      {activeView.layout === "table" && (
-        <div className="card" style={{ padding: 0, overflow: "hidden", flex: 1, overflowY: "auto" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr auto 100px 80px 80px 80px 40px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--line)", fontWeight: 600, fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-            <span>Title</span><span>Course</span><span>Due</span><span>Weight</span><span>Status</span><span>Files</span>
-          </div>
-          {filtered.map((a) => {
-            const subj = subjects.find((s) => s.id === a.subjectId);
-            const subjColor = subj?.color ?? "#888888";
-            return (
-              <div key={a.id} style={{ display: "grid", gridTemplateColumns: "1fr auto 100px 80px 80px 80px 40px", gap: 0, padding: "10px 12px", borderBottom: "1px solid var(--line)", alignItems: "center", fontSize: "0.86rem", cursor: "pointer" }} onClick={() => setDetailId(a.id)}>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.title}</span>
-                <span className="tag" style={{ background: hexToRgba(subjColor, 0.15), color: subjColor, border: `1px solid ${hexToRgba(subjColor, 0.3)}`, fontSize: "0.78rem" }}>{subj?.code ?? "—"}</span>
-                <span className="muted">{a.due}</span>
-                <span className="muted">{a.weight}%</span>
-                <span className="tag">{statusLabels[a.status]}</span>
-                <span className="muted">{(a.relatedFileIds?.length ?? 0) > 0 ? <Paperclip size={12} /> : "—"}</span>
-                <button className="btn btn-ghost btn-danger" style={{ height: 28, padding: "0 6px" }} onClick={(e) => { e.stopPropagation(); deleteAssignment(a.id); }}>
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            );
-          })}
-          {filtered.length === 0 && <div className="empty">No assignments match these filters.</div>}
+      {activeView.layout === "board" && filtered.length === 0 && hasActiveFilters && (
+        <div className="empty empty-state-card">
+          <strong>No tasks match these filters</strong>
+          <span className="muted" style={{ fontSize: "0.84rem" }}>Try clearing a filter, or use Add task in any column.</span>
+          <button className="btn btn-sm" style={{ marginTop: 10 }} onClick={() => { setQuery(""); updateFilters([]); }}>Clear filters</button>
+        </div>
+      )}
+      {activeView.layout === "board" && filtered.length === 0 && !hasActiveFilters && assignments.length === 0 && (
+        <div className="empty empty-state-card">
+          <strong>No tasks yet</strong>
+          <span className="muted" style={{ fontSize: "0.84rem" }}>Use Add task in any column above to create your first task.</span>
         </div>
       )}
 
@@ -423,7 +483,7 @@ export function AssignmentsPage({
   );
 }
 
-function KanbanColumn({ title, count, items, subjects, moodleFiles, draggingId, setDraggingId, dragOverCol, setDragOverCol, updateAssignment, toggleAssignmentFile, deleteAssignment, addAssignment, activeSubjectId, defaultSubjectId, statusOverride, onOpenDetail }: {
+function KanbanColumn({ title, count, items, subjects, moodleFiles, draggingId, setDraggingId, dragOverCol, setDragOverCol, updateAssignment, toggleAssignmentFile, deleteAssignment, addAssignment, activeSubjectId, defaultSubjectId, statusOverride, onOpenDetail, selectedIds, toggleSelect }: {
   title: string; count: number; items: Assignment[]; subjects: Subject[]; moodleFiles: MoodleFile[];
   draggingId: string; setDraggingId: (id: string) => void;
   dragOverCol: string | null; setDragOverCol: (id: string | null | ((prev: string | null) => string | null)) => void;
@@ -433,8 +493,40 @@ function KanbanColumn({ title, count, items, subjects, moodleFiles, draggingId, 
   addAssignment: (input: { title: string; subjectId: string; due: string; weight: number; description: string; relatedFileIds: string[]; status?: Status; priority?: Priority }) => void;
   activeSubjectId: string; defaultSubjectId: string; statusOverride?: Status;
   onOpenDetail: (id: string) => void;
+  selectedIds: Set<string>;
+  toggleSelect: (id: string) => void;
 }) {
   const isOver = dragOverCol === title;
+  const [isAdding, setIsAdding] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftDue, setDraftDue] = useState("");
+  const [draftPriority, setDraftPriority] = useState<Priority | "">("");
+  const [draftSubjectId, setDraftSubjectId] = useState(activeSubjectId || defaultSubjectId);
+
+  function resetDraft() {
+    setDraftTitle("");
+    setDraftDue("");
+    setDraftPriority("");
+    setDraftSubjectId(activeSubjectId || defaultSubjectId);
+  }
+
+  function handleSave() {
+    if (!draftTitle.trim()) return;
+    const payload: Parameters<typeof addAssignment>[0] = {
+      title: draftTitle.trim(),
+      subjectId: draftSubjectId || defaultSubjectId,
+      due: draftDue,
+      weight: 0,
+      description: "",
+      relatedFileIds: [],
+      status: statusOverride ?? "todo",
+    };
+    if (draftPriority) payload.priority = draftPriority;
+    addAssignment(payload);
+    resetDraft();
+    setIsAdding(false);
+  }
+
   return (
     <div className={`kanban-col ${isOver ? "drag-over" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDragOverCol(title); }}
@@ -446,39 +538,179 @@ function KanbanColumn({ title, count, items, subjects, moodleFiles, draggingId, 
         <KanbanCard key={a.id} assignment={a} subjects={subjects} moodleFiles={moodleFiles}
           updateAssignment={updateAssignment} toggleAssignmentFile={toggleAssignmentFile}
           deleteAssignment={deleteAssignment} onDragStart={() => setDraggingId(a.id)} onDragEnd={() => setDraggingId("")}
-          onClick={() => onOpenDetail(a.id)} />
+          onClick={() => onOpenDetail(a.id)} isSelected={selectedIds.has(a.id)} onToggleSelect={() => toggleSelect(a.id)} />
       ))}
       {!items.length && <div className="drop-empty">No tasks</div>}
-      <button className="kanban-add-task" onClick={() => addAssignment({ title: "Untitled", subjectId: activeSubjectId || defaultSubjectId, due: toIsoDate(new Date()), weight: 0, description: "", relatedFileIds: [], status: statusOverride ?? "todo", priority: "medium" })}>
-        <Plus size={12} /> Add task
-      </button>
+      {isAdding ? (
+        <div className="task task-add-form" style={{ gap: 8, padding: 12 }}>
+          <input
+            autoFocus
+            className="input"
+            style={{ fontSize: "0.84rem", padding: "8px 10px" }}
+            placeholder="Task title"
+            value={draftTitle}
+            onChange={(e) => setDraftTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && draftTitle.trim()) { e.preventDefault(); handleSave(); }
+              if (e.key === "Escape") { e.preventDefault(); resetDraft(); setIsAdding(false); }
+            }}
+          />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <select className="select" style={{ fontSize: "0.78rem", padding: "7px 10px" }} value={draftSubjectId} onChange={(e) => setDraftSubjectId(e.target.value)}>
+              {subjects.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
+            </select>
+            <input type="date" className="input" style={{ fontSize: "0.78rem", padding: "7px 10px" }} value={draftDue} onChange={(e) => setDraftDue(e.target.value)} />
+          </div>
+          <select className="select" style={{ fontSize: "0.78rem", padding: "7px 10px" }} value={draftPriority} onChange={(e) => setDraftPriority(e.target.value as Priority | "")}>
+            <option value="">No priority</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <div className="row" style={{ gap: 6, justifyContent: "flex-end", paddingTop: 4 }}>
+            <button className="btn btn-ghost" style={{ height: 30, fontSize: "0.78rem" }} onClick={() => { resetDraft(); setIsAdding(false); }}>Cancel</button>
+            <button className="btn btn-primary" style={{ height: 30, fontSize: "0.78rem" }} onClick={handleSave}>Save</button>
+          </div>
+        </div>
+      ) : (
+        <button className="kanban-add-task" onClick={() => setIsAdding(true)}>
+          <Plus size={12} /> Add task
+        </button>
+      )}
     </div>
   );
 }
 
-function KanbanCard({ assignment, subjects, moodleFiles, updateAssignment, toggleAssignmentFile, deleteAssignment, onDragStart, onDragEnd, onClick }: {
+function KanbanCard({ assignment, subjects, moodleFiles, updateAssignment, toggleAssignmentFile, deleteAssignment, onDragStart, onDragEnd, onClick, isSelected, onToggleSelect }: {
   assignment: Assignment; subjects: Subject[]; moodleFiles: MoodleFile[];
   updateAssignment: (id: string, patch: Partial<Assignment>) => void;
   toggleAssignmentFile: (id: string, fileId: string) => void;
   deleteAssignment: (id: string) => void;
   onDragStart: () => void; onDragEnd: () => void; onClick: () => void;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }) {
   const subject = subjects.find((s) => s.id === assignment.subjectId);
   const hasFiles = (assignment.relatedFileIds?.length ?? 0) > 0;
   const priority = assignment.priority ?? "medium";
   const priorityColor = priority === "high" ? "#dc2626" : priority === "low" ? "#6b7280" : "#f59e0b";
+  const today = new Date(); today.setHours(0,0,0,0);
+  const hasDue = !!assignment.due;
+  const due = hasDue ? new Date(`${assignment.due}T00:00:00`) : null;
+  const diff = due ? Math.floor((+due - +today) / 86400000) : 0;
+  const isOverdue = hasDue && diff < 0;
 
   return (
-    <div className="task" draggable onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onClick}>
-      <div className="task-head">
-        <span className="agenda-dot" style={{ background: subject?.color ?? "var(--accent)" }} />
-        <span style={{ fontWeight: 600, fontSize: "0.86rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{assignment.title}</span>
+    <div
+      className={`task ${isSelected ? "selected" : ""}`}
+      draggable
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDoubleClick={onClick}
+    >
+      <div className="task-topbar">
+        <div className="task-subject">
+          <span className="task-dot" style={{ background: subject?.color ?? "var(--accent)" }} />
+          <span className="task-subject-code">{subject?.code ?? "—"}</span>
+        </div>
+        <div className="task-actions">
+          {hasFiles && <Paperclip size={12} className="muted" />}
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
+            className="task-select"
+            title="Select"
+          />
+        </div>
       </div>
-      <div className="task-meta">
-        <span className="task-tag" style={{ background: hexToRgba(subject?.color ?? "#888", 0.12), color: subject?.color ?? "#888", borderColor: hexToRgba(subject?.color ?? "#888", 0.25) }}>{subject?.code ?? "—"}</span>
-        <span className="task-tag">{assignment.due}</span>
-        <span className="task-tag" style={{ color: priorityColor, borderColor: hexToRgba(priorityColor, 0.3), background: hexToRgba(priorityColor, 0.1) }}>{priorityLabels[priority]}</span>
-        {hasFiles && <Paperclip size={11} className="muted" />}
+      <div className="task-title" onClick={onClick}>{assignment.title}</div>
+      <div className="task-footer">
+        <span className={`task-due ${isOverdue ? "overdue" : ""}`}>
+          {!hasDue ? "No due date" : isOverdue ? `${Math.abs(diff)}d overdue` : diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : assignment.due}
+        </span>
+        <span className="task-priority" style={{ color: priorityColor, background: hexToRgba(priorityColor, 0.1), borderColor: hexToRgba(priorityColor, 0.25) }}>
+          {priorityLabels[priority]}
+        </span>
+        {assignment.weight > 0 && <span className="task-weight">{assignment.weight}%</span>}
+      </div>
+    </div>
+  );
+}
+
+function ListAddTask({ subjects, activeSubjectId, defaultSubjectId, addAssignment }: {
+  subjects: Subject[];
+  activeSubjectId: string;
+  defaultSubjectId: string;
+  addAssignment: (input: { title: string; subjectId: string; due: string; weight: number; description: string; relatedFileIds: string[]; status?: Status; priority?: Priority }) => void;
+}) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftDue, setDraftDue] = useState("");
+  const [draftPriority, setDraftPriority] = useState<Priority | "">("");
+  const [draftSubjectId, setDraftSubjectId] = useState(activeSubjectId || defaultSubjectId);
+
+  function resetDraft() {
+    setDraftTitle("");
+    setDraftDue("");
+    setDraftPriority("");
+    setDraftSubjectId(activeSubjectId || defaultSubjectId);
+  }
+
+  function handleSave() {
+    if (!draftTitle.trim()) return;
+    const payload: Parameters<typeof addAssignment>[0] = {
+      title: draftTitle.trim(),
+      subjectId: draftSubjectId || defaultSubjectId,
+      due: draftDue,
+      weight: 0,
+      description: "",
+      relatedFileIds: [],
+      status: "todo",
+    };
+    if (draftPriority) payload.priority = draftPriority;
+    addAssignment(payload);
+    resetDraft();
+    setIsAdding(false);
+  }
+
+  if (!isAdding) {
+    return (
+      <button className="kanban-add-task" style={{ marginTop: 4 }} onClick={() => setIsAdding(true)}>
+        <Plus size={12} /> Add task
+      </button>
+    );
+  }
+
+  return (
+    <div className="list-task-row list-add-form" style={{ background: "var(--surface)", borderRadius: "var(--radius-sm)", flexDirection: "column", alignItems: "stretch", gap: 8, padding: "12px 14px" }}>
+      <input
+        autoFocus
+        className="input"
+        style={{ fontSize: "0.84rem", padding: "8px 10px" }}
+        placeholder="Task title"
+        value={draftTitle}
+        onChange={(e) => setDraftTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && draftTitle.trim()) { e.preventDefault(); handleSave(); }
+          if (e.key === "Escape") { e.preventDefault(); resetDraft(); setIsAdding(false); }
+        }}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <select className="select" style={{ fontSize: "0.78rem", padding: "7px 10px" }} value={draftSubjectId} onChange={(e) => setDraftSubjectId(e.target.value)}>
+          {subjects.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
+        </select>
+        <input type="date" className="input" style={{ fontSize: "0.78rem", padding: "7px 10px" }} value={draftDue} onChange={(e) => setDraftDue(e.target.value)} />
+      </div>
+      <select className="select" style={{ fontSize: "0.78rem", padding: "7px 10px" }} value={draftPriority} onChange={(e) => setDraftPriority(e.target.value as Priority | "")}>
+        <option value="">No priority</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+      <div className="row" style={{ gap: 6, justifyContent: "flex-end", paddingTop: 4 }}>
+        <button className="btn btn-ghost" style={{ height: 30, fontSize: "0.78rem" }} onClick={() => { resetDraft(); setIsAdding(false); }}>Cancel</button>
+        <button className="btn btn-primary" style={{ height: 30, fontSize: "0.78rem" }} onClick={handleSave}>Save</button>
       </div>
     </div>
   );
@@ -684,7 +916,7 @@ function RelatedFileLinks({ files, selectedIds }: { files: MoodleFile[]; selecte
   return (
     <div className="related-files">
       {related.map((file) => (
-        <a key={moodleFileKey(file)} href={localAssetHref(file.localUrl ?? file.fileurl)} target="_blank" rel="noreferrer">
+        <a key={moodleFileKey(file)} href={localAssetHref(file.localUrl ?? file.fileurl)} target="_blank" rel="noreferrer" onClick={(e) => openMoodleFile(file, e)}>
           <FileText size={12} /> {file.filename}
         </a>
       ))}

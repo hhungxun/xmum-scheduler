@@ -5,7 +5,7 @@ const titles: Record<Page, [string, string]> = {
   dashboard: ["Command Center", "Manage everything through conversation"],
   calendar: ["Calendar", "Schedule and weekly overview"],
   knowledge: ["Knowledge", "Notes and AI-assisted writing"],
-  assignments: ["Assignments", "Kanban board and task tracking"],
+  assignments: ["Tasks", "Kanban board and task tracking"],
   exams: ["Exams", "Quizzes, grades, and analytics"],
   moodle: ["Moodle", "Course sync and file management"],
   settings: ["Settings", "Semester, timetable, and preferences"],

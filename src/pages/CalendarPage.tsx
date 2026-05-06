@@ -1,10 +1,14 @@
-import Calendar, { type ExternalEventTypes, type Options as ToastCalendarOptions } from "@toast-ui/calendar";
-import "@toast-ui/calendar/dist/toastui-calendar.min.css";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import FullCalendar from "@fullcalendar/react";
+import dayGridPlugin from "@fullcalendar/daygrid";
+import timeGridPlugin from "@fullcalendar/timegrid";
+import interactionPlugin from "@fullcalendar/interaction";
+import type { EventClickArg, DateSelectArg, EventDropArg, EventMountArg } from "@fullcalendar/core";
 import type { CalendarEvent, Subject, Assignment, ExamRecord, AcademicOption, Status, Priority } from "../types";
-import { toIsoDate, timeFromDate, dateLikeToDate, dateToDayIndex, semesterClassDates, HOUR_START, HOUR_END } from "../lib/utils";
-import { ChevronLeft, ChevronRight, Plus, Trash2, Paperclip, CheckCircle2, Circle, X, CalendarDays, MapPin, Clock, AlignLeft } from "lucide-react";
-import { statusLabels, examKindLabels, fmtRange } from "../lib/utils";
+import { toIsoDate, timeFromDate, dateToDayIndex, semesterClassDates, HOUR_START, HOUR_END } from "../lib/utils";
+
+import { ChevronLeft, ChevronRight, Plus, Trash2, Paperclip, CheckCircle2, Circle, X, CalendarDays, MapPin, Clock, AlignLeft, SlidersHorizontal } from "lucide-react";
+import { statusLabels, fmtRange } from "../lib/utils";
 
 type FilterChip = "all" | "pending" | "completed" | "overdue";
 
@@ -20,6 +24,14 @@ type CreateModalData = {
   endTime: string;
   isAllDay: boolean;
   editingEventId?: string;
+};
+
+type CalendarContextMenu = {
+  open: boolean;
+  x: number;
+  y: number;
+  eventId: string;
+  eventType: string;
 };
 
 function emptyModalData(subjects: Subject[]): CreateModalData {
@@ -50,6 +62,7 @@ export function CalendarPage(props: {
   addAssignment: (input: { title: string; subjectId: string; due: string; weight: number; description: string; relatedFileIds: string[]; status?: Status; priority?: Priority }) => void;
   updateAssignment: (id: string, patch: Partial<Assignment>) => void;
   deleteAssignment: (id: string) => void;
+  updateExam?: (id: string, patch: Partial<ExamRecord>) => void;
   weekStart: Date;
   weekEnd: Date;
   weekNumber: number;
@@ -60,31 +73,53 @@ export function CalendarPage(props: {
   const {
     selectedCalendar, events, subjects, assignments, exams,
     addCalendarEvent, updateCalendarEvent, deleteCalendarEvent,
-    addAssignment, updateAssignment, deleteAssignment,
+    addAssignment, updateAssignment, deleteAssignment, updateExam,
     weekStart, weekEnd, weekNumber, today, weekOffset, setWeekOffset,
   } = props;
 
   const [selectedDate, setSelectedDate] = useState<Date>(today);
   const [filter, setFilter] = useState<FilterChip>("all");
   const [subjectFilter, setSubjectFilter] = useState<string>("all");
+  const [priorityFilter, setPriorityFilter] = useState<"all" | Priority | "none">("all");
   const [sortBy, setSortBy] = useState<"priority" | "due" | "subject" | "status" | "created">("priority");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const detailAssignment = assignments.find((a) => a.id === detailId) ?? null;
   const [modal, setModal] = useState<CreateModalData>(() => emptyModalData(subjects));
   const [quickAddText, setQuickAddText] = useState("");
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTaskText, setEditTaskText] = useState("");
+  const [ctxMenu, setCtxMenu] = useState<CalendarContextMenu>({ open: false, x: 0, y: 0, eventId: "", eventType: "" });
+  const ctxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) {
+        setCtxMenu((p) => ({ ...p, open: false }));
+      }
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
+        setFilterOpen(false);
+      }
+    }
+    if (ctxMenu.open || filterOpen) document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [ctxMenu.open, filterOpen]);
 
   const selectedIso = toIsoDate(selectedDate);
   const isToday = selectedIso === toIsoDate(today);
 
   const dayAssignments = useMemo(() => {
-    let list = assignments.filter((a) => a.due === selectedIso);
+    let list = assignments.filter((a) => !!a.due && (a.due === selectedIso || (a.createdAt && a.createdAt.slice(0, 10) === selectedIso)));
     const todayStr = toIsoDate(today);
-    if (filter === "pending") list = list.filter((a) => a.status !== "graded");
-    if (filter === "completed") list = list.filter((a) => a.status === "graded");
-    if (filter === "overdue") list = list.filter((a) => a.due < todayStr && a.status !== "graded");
+    if (filter === "pending") list = list.filter((a) => a.status !== "done");
+    if (filter === "completed") list = list.filter((a) => a.status === "done");
+    if (filter === "overdue") list = list.filter((a) => !!a.due && a.due < todayStr && a.status !== "done");
     if (subjectFilter !== "all") list = list.filter((a) => a.subjectId === subjectFilter);
+    if (priorityFilter !== "all") {
+      if (priorityFilter === "none") list = list.filter((a) => !a.priority);
+      else list = list.filter((a) => a.priority === priorityFilter);
+    }
 
     list.sort((a, b) => {
       switch (sortBy) {
@@ -92,7 +127,7 @@ export function CalendarPage(props: {
           const order = { high: 0, medium: 1, low: 2 };
           return (order[a.priority ?? "medium"] - order[b.priority ?? "medium"]) || a.title.localeCompare(b.title);
         }
-        case "due": return a.due.localeCompare(b.due) || a.title.localeCompare(b.title);
+        case "due": return (a.due || "").localeCompare(b.due || "") || a.title.localeCompare(b.title);
         case "subject": {
           const sa = subjects.find((s) => s.id === a.subjectId)?.code ?? "";
           const sb = subjects.find((s) => s.id === b.subjectId)?.code ?? "";
@@ -104,9 +139,9 @@ export function CalendarPage(props: {
       }
     });
     return list;
-  }, [assignments, selectedIso, filter, subjectFilter, sortBy, subjects, today]);
+  }, [assignments, selectedIso, filter, subjectFilter, priorityFilter, sortBy, subjects, today]);
 
-  const dayExams = useMemo(() => exams.filter((e) => e.date === selectedIso), [exams, selectedIso]);
+
   const dayClasses = useMemo(() =>
     events.filter((e) => {
       if (e.type !== "class" && e.type !== "custom") return false;
@@ -116,8 +151,8 @@ export function CalendarPage(props: {
   [events, selectedIso]);
 
   const totalTasks = dayAssignments.length;
-  const completedTasks = dayAssignments.filter((a) => a.status === "graded").length;
-  const overdueTasks = dayAssignments.filter((a) => a.due < toIsoDate(today) && a.status !== "graded").length;
+  const completedTasks = dayAssignments.filter((a) => a.status === "done").length;
+  const overdueTasks = dayAssignments.filter((a) => !!a.due && a.due < toIsoDate(today) && a.status !== "done").length;
 
   const [completedCollapsed, setCompletedCollapsed] = useState(false);
 
@@ -131,18 +166,18 @@ export function CalendarPage(props: {
 
   const handleSaveModal = useCallback(() => {
     if (!modal.title.trim()) return;
-    if (modal.mode === "event") {
-      const date = modal.startDate;
-      let start = modal.isAllDay ? "00:00" : modal.startTime;
-      let end = modal.isAllDay ? "23:59" : modal.endTime;
-      if (!modal.isAllDay) {
-        const startDate = new Date(`${modal.startDate}T${start}`);
-        const endDate = new Date(`${modal.endDate}T${end}`);
-        if (endDate <= startDate) {
-          const corrected = new Date(startDate.getTime() + 30 * 60000);
-          end = timeFromDate(corrected);
-        }
+    const date = modal.startDate;
+    let start = modal.isAllDay ? "00:00" : modal.startTime;
+    let end = modal.isAllDay ? "23:59" : modal.endTime;
+    if (!modal.isAllDay) {
+      const startDate = new Date(`${modal.startDate}T${start}`);
+      const endDate = new Date(`${modal.endDate}T${end}`);
+      if (endDate <= startDate) {
+        const corrected = new Date(startDate.getTime() + 30 * 60000);
+        end = timeFromDate(corrected);
       }
+    }
+    if (modal.mode === "event") {
       if (modal.editingEventId) {
         updateCalendarEvent(modal.editingEventId, {
           name: modal.title.trim(),
@@ -164,18 +199,19 @@ export function CalendarPage(props: {
       }
     } else {
       // Task mode: create/update assignment
+      const taskPayload = {
+        title: modal.title.trim(),
+        due: date,
+        subjectId: modal.subjectId,
+        start: modal.isAllDay ? undefined : start,
+        end: modal.isAllDay ? undefined : end,
+      };
       if (modal.editingEventId && modal.editingEventId.startsWith("assignment-")) {
         const assignId = modal.editingEventId.replace("assignment-", "");
-        updateAssignment(assignId, {
-          title: modal.title.trim(),
-          due: modal.startDate,
-          subjectId: modal.subjectId,
-        });
+        updateAssignment(assignId, taskPayload);
       } else {
         addAssignment({
-          title: modal.title.trim(),
-          subjectId: modal.subjectId,
-          due: modal.startDate,
+          ...taskPayload,
           weight: 0,
           description: "",
           relatedFileIds: [],
@@ -216,15 +252,21 @@ export function CalendarPage(props: {
               <button className="icon-btn" onClick={() => setWeekOffset(weekOffset + 1)} aria-label="Next"><ChevronRight size={14} /></button>
             </div>
           </div>
-          <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-            <ToastCalendarView
+          <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
+            <FullCalendarView
               events={events}
-              subjects={subjects}
               selectedCalendar={selectedCalendar}
               weekStart={weekStart}
               updateCalendarEvent={updateCalendarEvent}
               deleteCalendarEvent={deleteCalendarEvent}
+              updateAssignment={updateAssignment}
+              deleteAssignment={deleteAssignment}
+              updateExam={updateExam}
+              assignments={assignments}
               onSelectDate={(date) => setSelectedDate(date)}
+              onContextMenu={(eventId, eventType, x, y) => {
+                setCtxMenu({ open: true, x, y, eventId, eventType });
+              }}
               onSelectDateTime={(start, end, isAllDay) => {
                 openCreateModal({
                   mode: "event",
@@ -247,32 +289,47 @@ export function CalendarPage(props: {
                     title: event.title ?? "",
                     subjectId: event.calendarId ?? "custom",
                     location: event.location ?? "",
-                    startDate: toIsoDate(dateLikeToDate(event.start)),
-                    startTime: timeFromDate(dateLikeToDate(event.start)),
-                    endDate: toIsoDate(dateLikeToDate(event.end)),
-                    endTime: timeFromDate(dateLikeToDate(event.end)),
+                    startDate: toIsoDate(event.start),
+                    startTime: timeFromDate(event.start),
+                    endDate: toIsoDate(event.end),
+                    endTime: timeFromDate(event.end),
                     isAllDay: event.category === "allday",
                     editingEventId: appId,
                   });
                 } else if (appType === "assignment" && appId) {
                   const assign = assignments.find((a) => a.id === appId);
                   if (assign) {
+                    const hasTime = !!assign.start && !!assign.end;
                     openCreateModal({
                       mode: "task",
                       title: assign.title,
                       subjectId: assign.subjectId,
                       location: "",
                       startDate: assign.due,
-                      startTime: "00:00",
+                      startTime: hasTime ? assign.start! : "00:00",
                       endDate: assign.due,
-                      endTime: "23:59",
-                      isAllDay: true,
+                      endTime: hasTime ? assign.end! : "23:59",
+                      isAllDay: !hasTime,
                       editingEventId: `assignment-${assign.id}`,
                     });
                   }
                 }
               }}
             />
+            {ctxMenu.open && (
+              <div ref={ctxRef} className="k-context-menu" style={{ top: ctxMenu.y, left: ctxMenu.x, position: "fixed", zIndex: 1000 }}>
+                <button
+                  className="k-context-item danger"
+                  onClick={() => {
+                    if (ctxMenu.eventType === "custom") deleteCalendarEvent(ctxMenu.eventId);
+                    else if (ctxMenu.eventType === "assignment") deleteAssignment(ctxMenu.eventId);
+                    setCtxMenu((p) => ({ ...p, open: false }));
+                  }}
+                >
+                  <Trash2 size={12} /> Delete
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -324,7 +381,7 @@ export function CalendarPage(props: {
           </div>
 
           {/* Filters */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0, position: "relative" }}>
             <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
               {(["all", "pending", "completed", "overdue"] as FilterChip[]).map((f) => (
                 <button
@@ -336,51 +393,67 @@ export function CalendarPage(props: {
                   {f}
                 </button>
               ))}
-            </div>
-            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-              <select
-                className="select"
-                style={{ height: 28, padding: "0 8px", fontSize: "0.76rem", flex: 1, minWidth: 0 }}
-                value={subjectFilter}
-                onChange={(e) => setSubjectFilter(e.target.value)}
+              <button
+                className={`btn ${subjectFilter !== "all" || priorityFilter !== "all" ? "btn-primary" : ""}`}
+                style={{ height: 28, padding: "0 10px", fontSize: "0.76rem" }}
+                onClick={() => setFilterOpen((v) => !v)}
               >
-                <option value="all">All subjects</option>
-                {subjects.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
-              </select>
-              <select
-                className="select"
-                style={{ height: 28, padding: "0 8px", fontSize: "0.76rem", minWidth: 90 }}
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-              >
-                <option value="priority">Priority</option>
-                <option value="due">Due</option>
-                <option value="subject">Subject</option>
-                <option value="status">Status</option>
-                <option value="created">Created</option>
-              </select>
+                <SlidersHorizontal size={13} />
+              </button>
             </div>
+            {filterOpen && (
+              <div ref={filterRef} className="filter-popover sidebar-filter" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, left: 0, zIndex: 100 }}>
+                <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Filters</div>
+                <div className="field" style={{ marginBottom: 8 }}>
+                  <label className="field-label" style={{ fontSize: "0.72rem" }}>Subject</label>
+                  <select className="select" style={{ fontSize: "0.78rem" }} value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
+                    <option value="all">All subjects</option>
+                    {subjects.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
+                  </select>
+                </div>
+                <div className="field" style={{ marginBottom: 8 }}>
+                  <label className="field-label" style={{ fontSize: "0.72rem" }}>Priority</label>
+                  <select className="select" style={{ fontSize: "0.78rem" }} value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value as "all" | Priority | "none")}>
+                    <option value="all">All priorities</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                    <option value="none">No priority</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label className="field-label" style={{ fontSize: "0.72rem" }}>Sort by</label>
+                  <select className="select" style={{ fontSize: "0.78rem" }} value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+                    <option value="priority">Priority</option>
+                    <option value="due">Due date</option>
+                    <option value="subject">Subject</option>
+                    <option value="status">Status</option>
+                    <option value="created">Created</option>
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Task list */}
           <div style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column", gap: 8 }}>
             {/* Deadlines / Tasks */}
-            {dayAssignments.filter((a) => a.status !== "graded").length > 0 && (
+            {dayAssignments.filter((a) => a.status !== "done").length > 0 && (
               <div>
                 <div className="section-title" style={{ marginBottom: 6 }}>
                   <span>Tasks</span>
-                  <span>{dayAssignments.filter((a) => a.status !== "graded").length}</span>
+                  <span>{dayAssignments.filter((a) => a.status !== "done").length}</span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {dayAssignments.filter((a) => a.status !== "graded").map((a) => (
+                  {dayAssignments.filter((a) => a.status !== "done").map((a) => (
                     <TaskItem
                       key={a.id}
                       assignment={a}
                       subjects={subjects}
                       updateAssignment={updateAssignment}
                       deleteAssignment={deleteAssignment}
-                        onOpenDetail={() => setDetailId(a.id)}
-                      isOverdue={a.due < toIsoDate(today) && a.status !== "graded"}
+                      onOpenDetail={() => setDetailId(a.id)}
+                      isOverdue={!!a.due && a.due < toIsoDate(today) && a.status !== "done"}
                       editingTaskId={editingTaskId}
                       editTaskText={editTaskText}
                       setEditTaskText={setEditTaskText}
@@ -412,32 +485,8 @@ export function CalendarPage(props: {
               </div>
             )}
 
-            {/* Exams */}
-            {dayExams.length > 0 && (
-              <div>
-                <div className="section-title" style={{ marginBottom: 6 }}>
-                  <span>Exams</span>
-                  <span>{dayExams.length}</span>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {dayExams.map((exam) => {
-                    const subject = subjects.find((s) => s.id === exam.subjectId);
-                    return (
-                      <div key={exam.id} className="today-item" style={{ padding: "6px 0" }}>
-                        <span className="agenda-dot" style={{ background: subject?.color ?? "var(--accent)" }} />
-                        <div>
-                          <strong style={{ fontSize: "0.84rem" }}>{exam.title}</strong>
-                          <small>{subject?.code ?? "Exam"} · {examKindLabels[exam.kind]} · {exam.weight}%</small>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
             {/* Completed */}
-            {dayAssignments.filter((a) => a.status === "graded").length > 0 && (
+            {dayAssignments.filter((a) => a.status === "done").length > 0 && (
               <div>
                 <button
                   className="section-title"
@@ -445,18 +494,18 @@ export function CalendarPage(props: {
                   onClick={() => setCompletedCollapsed((v) => !v)}
                 >
                   <span>Completed</span>
-                  <span>{dayAssignments.filter((a) => a.status === "graded").length} {completedCollapsed ? "▸" : "▾"}</span>
+                  <span>{dayAssignments.filter((a) => a.status === "done").length} {completedCollapsed ? "▸" : "▾"}</span>
                 </button>
                 {!completedCollapsed && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {dayAssignments.filter((a) => a.status === "graded").map((a) => (
+                    {dayAssignments.filter((a) => a.status === "done").map((a) => (
                       <TaskItem
                         key={a.id}
                         assignment={a}
                         subjects={subjects}
                         updateAssignment={updateAssignment}
                         deleteAssignment={deleteAssignment}
-                      onOpenDetail={() => setDetailId(a.id)}
+                        onOpenDetail={() => setDetailId(a.id)}
                         isOverdue={false}
                         editingTaskId={editingTaskId}
                         editTaskText={editTaskText}
@@ -469,7 +518,7 @@ export function CalendarPage(props: {
               </div>
             )}
 
-            {dayAssignments.length === 0 && dayExams.length === 0 && dayClasses.length === 0 && (
+            {dayAssignments.length === 0 && dayClasses.length === 0 && (
               <div className="empty compact" style={{ marginTop: 8 }}>
                 <span style={{ fontSize: "0.84rem" }}>No tasks for this day.</span>
               </div>
@@ -579,10 +628,10 @@ function TaskItem({ assignment, subjects, updateAssignment, deleteAssignment, on
         <button
           className="icon-btn"
           style={{ width: 22, height: 22, border: 0, background: "transparent" }}
-          onClick={(e) => { e.stopPropagation(); updateAssignment(assignment.id, { status: assignment.status === "graded" ? "todo" : "graded" }); }}
-          title={assignment.status === "graded" ? "Mark incomplete" : "Mark complete"}
+          onClick={(e) => { e.stopPropagation(); updateAssignment(assignment.id, { status: assignment.status === "done" ? "todo" : "done" }); }}
+          title={assignment.status === "done" ? "Mark incomplete" : "Mark complete"}
         >
-          {assignment.status === "graded" ? <CheckCircle2 size={16} style={{ color: "var(--success)" }} /> : <Circle size={16} style={{ color: "var(--muted)" }} />}
+          {assignment.status === "done" ? <CheckCircle2 size={16} style={{ color: "var(--success)" }} /> : <Circle size={16} style={{ color: "var(--muted)" }} />}
         </button>
         {isEditing ? (
           <input
@@ -601,7 +650,7 @@ function TaskItem({ assignment, subjects, updateAssignment, deleteAssignment, on
         ) : (
           <div
             className="task-mini-title"
-            style={{ textDecoration: assignment.status === "graded" ? "line-through" : "none", opacity: assignment.status === "graded" ? 0.6 : 1 }}
+            style={{ textDecoration: assignment.status === "done" ? "line-through" : "none", opacity: assignment.status === "done" ? 0.6 : 1 }}
             onDoubleClick={(e) => { e.stopPropagation(); setEditingTaskId(assignment.id); setEditTaskText(assignment.title); }}
           >
             {assignment.title}
@@ -700,13 +749,13 @@ function CreateEventModal({
 
   return (
     <div className="modal-overlay" onClick={onClose} style={{ zIndex: 700 }}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440, width: "90%" }}>
+      <div className="modal-content modal-task-create" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
         <div className="modal-header">
           <h3>{title}</h3>
           <button className="icon-btn" onClick={onClose}><X size={16} /></button>
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gap: 14 }}>
           {/* Type toggle */}
           <div className="row" style={{ gap: 4, background: "var(--surface)", padding: 4, borderRadius: "var(--radius-sm)", alignSelf: "flex-start" }}>
             <button
@@ -831,188 +880,206 @@ function CreateEventModal({
   );
 }
 
-function ToastCalendarView({
-  events, subjects, selectedCalendar, weekStart, updateCalendarEvent, deleteCalendarEvent,
-  onSelectDate, onSelectDateTime, onClickEvent,
+function FullCalendarView({
+  events, selectedCalendar, weekStart, updateCalendarEvent, deleteCalendarEvent,
+  updateAssignment, deleteAssignment, updateExam, assignments,
+  onSelectDate, onSelectDateTime, onClickEvent, onContextMenu,
 }: {
   events: CalendarEvent[];
-  subjects: Subject[];
   selectedCalendar: AcademicOption;
   weekStart: Date;
   updateCalendarEvent: (id: string, patch: Partial<CalendarEvent>) => void;
   deleteCalendarEvent: (id: string) => void;
+  updateAssignment: (id: string, patch: Partial<Assignment>) => void;
+  deleteAssignment: (id: string) => void;
+  updateExam?: (id: string, patch: Partial<ExamRecord>) => void;
+  assignments: Assignment[];
   onSelectDate?: (date: Date) => void;
   onSelectDateTime?: (start: Date, end: Date, isAllDay: boolean) => void;
   onClickEvent?: (event: any) => void;
+  onContextMenu?: (eventId: string, eventType: string, x: number, y: number) => void;
 }) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const calendarRef = useRef<Calendar | null>(null);
+  const calendarRef = useRef<FullCalendar>(null);
   const updateRef = useRef(updateCalendarEvent);
-  const deleteRef = useRef(deleteCalendarEvent);
-  const dateRef = useRef(onSelectDate);
-  const selectTimeRef = useRef(onSelectDateTime);
+  const updateAssignRef = useRef(updateAssignment);
+  const updateExamRef = useRef(updateExam);
   const clickEventRef = useRef(onClickEvent);
+  const selectTimeRef = useRef(onSelectDateTime);
+  const dateRef = useRef(onSelectDate);
+  const ctxMenuRef = useRef(onContextMenu);
 
   updateRef.current = updateCalendarEvent;
-  deleteRef.current = deleteCalendarEvent;
-  dateRef.current = onSelectDate;
-  selectTimeRef.current = onSelectDateTime;
+  updateAssignRef.current = updateAssignment;
+  updateExamRef.current = updateExam;
   clickEventRef.current = onClickEvent;
+  selectTimeRef.current = onSelectDateTime;
+  dateRef.current = onSelectDate;
+  ctxMenuRef.current = onContextMenu;
 
-  const calendars = useMemo(() => [
-    ...subjects.map((subject) => ({
-      id: subject.id,
-      name: subject.code,
-      color: "#ffffff",
-      backgroundColor: subject.color,
-      dragBackgroundColor: subject.color,
-      borderColor: subject.color,
-    })),
-    {
-      id: "custom",
-      name: "Custom",
-      color: "#ffffff",
-      backgroundColor: "#525252",
-      dragBackgroundColor: "#525252",
-      borderColor: "#525252",
-    },
-  ], [subjects]);
+  const fcEvents = useMemo(() => {
+    return events.flatMap((event) => {
+      const isRecurringClass = event.type === "class" && !event.date;
+      const draggable = event.type === "custom" || event.type === "assignment" || event.type === "exam";
+      return semesterClassDates(event, selectedCalendar).map((date) => {
+        const id = isRecurringClass ? `${event.id}-${date}` : event.id;
+        const isAllDay = event.type === "assignment" && event.start === "00:00";
+        return {
+          id,
+          title: event.type === "class" ? `${event.code} · ${event.name}` : event.name,
+          start: isAllDay ? `${date}T00:00:00` : `${date}T${event.start}:00`,
+          end: isAllDay ? `${date}T23:59:00` : `${date}T${event.end}:00`,
+          allDay: isAllDay,
+          editable: draggable,
+          startEditable: draggable,
+          durationEditable: draggable && !isAllDay,
+          backgroundColor: event.color,
+          borderColor: event.color,
+          textColor: "#ffffff",
+          extendedProps: {
+            appId: event.type === "assignment" ? event.id.replace("assignment-", "") : event.type === "exam" ? event.id.replace("exam-", "") : event.id,
+            appType: event.type,
+            appDate: date,
+            code: event.code,
+            venue: event.venue,
+            subjectId: event.subjectId,
+          },
+        };
+      });
+    });
+  }, [events, selectedCalendar]);
 
   useEffect(() => {
-    if (!hostRef.current) return;
-    const options: ToastCalendarOptions = {
-      defaultView: "week",
-      usageStatistics: false,
-      useFormPopup: false,
-      useDetailPopup: false,
-      gridSelection: { enableClick: true, enableDblClick: true },
-      calendars,
-      week: {
-        startDayOfWeek: 1,
-        dayNames: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-        hourStart: HOUR_START,
-        hourEnd: HOUR_END,
-        taskView: false,
-        eventView: ["time", "allday"],
-        showTimezoneCollapseButton: false,
-        timezonesCollapsed: true,
-      },
-      month: {
-        startDayOfWeek: 1,
-        visibleEventCount: 3,
-      },
-      template: {
-        time(event) {
-          return `<span>${event.title ?? ""}</span>`;
-        },
-        allday(event) {
-          return `<span style="font-weight:600">${event.title ?? ""}</span>`;
-        },
-      },
-    };
+    const api = calendarRef.current?.getApi();
+    if (!api) return;
+    api.gotoDate(weekStart);
+  }, [weekStart]);
 
-    const calendar = new Calendar(hostRef.current, options);
-    calendarRef.current = calendar;
+  const handleEventClick = useCallback((info: EventClickArg) => {
+    const e = info.event;
+    clickEventRef.current?.({
+      title: e.title,
+      start: e.start ?? new Date(),
+      end: e.end ?? new Date(),
+      location: e.extendedProps.venue ?? "",
+      calendarId: e.extendedProps.subjectId ?? "custom",
+      category: e.allDay ? "allday" : "time",
+      raw: { appId: e.extendedProps.appId, appType: e.extendedProps.appType },
+    });
+  }, []);
 
-    const selectDateTimeHandler: ExternalEventTypes["selectDateTime"] = (ev) => {
-      const e = ev as { start: Date; end: Date; isAllday: boolean };
-      const start = dateLikeToDate(e.start);
-      const end = dateLikeToDate(e.end);
-      selectTimeRef.current?.(start, end, e.isAllday);
-      calendar.clearGridSelections();
-    };
+  const handleSelect = useCallback((info: DateSelectArg) => {
+    selectTimeRef.current?.(info.start, info.end, info.allDay);
+    info.view.calendar.unselect();
+  }, []);
 
-    const updateHandler: ExternalEventTypes["beforeUpdateEvent"] = ({ event, changes }) => {
-      const appId = String((event.raw as { appId?: string } | undefined)?.appId ?? event.id ?? "");
-      if (!appId || (event.raw as { appType?: string } | undefined)?.appType !== "custom") return;
-      const start = changes.start ? dateLikeToDate(changes.start) : dateLikeToDate(event.start);
-      const end = changes.end ? dateLikeToDate(changes.end) : dateLikeToDate(event.end);
+  const handleEventDrop = useCallback((info: EventDropArg) => {
+    const appType = info.event.extendedProps.appType;
+    const appId = info.event.extendedProps.appId;
+    const start = info.event.start;
+    const end = info.event.end;
+    if (!start || !appId) { info.revert(); return; }
+    const isAllDay = !!info.event.allDay;
+    const dropDate = toIsoDate(start);
+
+    if (appType === "custom") {
       updateRef.current(appId, {
-        name: changes.title ?? event.title ?? "Untitled event",
+        name: info.event.title,
+        date: dropDate,
+        dayIndex: dateToDayIndex(dropDate),
+        start: isAllDay ? "00:00" : timeFromDate(start),
+        end: isAllDay ? "23:59" : (end ? timeFromDate(end) : timeFromDate(start)),
+        venue: info.event.extendedProps.venue ?? "",
+        subjectId: info.event.extendedProps.subjectId,
+      });
+    } else if (appType === "assignment") {
+      // Assignments dropped on the all-day strip become deadlines without specific times.
+      // Assignments dropped on time slots adopt that time range.
+      updateAssignRef.current(appId, {
+        due: dropDate,
+        start: isAllDay ? undefined : timeFromDate(start),
+        end: isAllDay ? undefined : (end ? timeFromDate(end) : timeFromDate(start)),
+      });
+    } else if (appType === "exam") {
+      // Exam model only stores a date — moving it across days updates the date.
+      updateExamRef.current?.(appId, { date: dropDate });
+    } else {
+      info.revert();
+    }
+  }, []);
+
+  const handleEventResize = useCallback((info: any) => {
+    const appType = info.event.extendedProps.appType;
+    const appId = info.event.extendedProps.appId;
+    const start = info.event.start;
+    const end = info.event.end;
+    if (!start || !end || !appId) { info.revert(); return; }
+    if (appType === "custom") {
+      updateRef.current(appId, {
+        name: info.event.title,
         date: toIsoDate(start),
         dayIndex: dateToDayIndex(toIsoDate(start)),
         start: timeFromDate(start),
         end: timeFromDate(end),
-        venue: changes.location ?? event.location ?? "",
-        subjectId: changes.calendarId && changes.calendarId !== "custom" ? changes.calendarId : event.calendarId === "custom" ? undefined : event.calendarId,
+        venue: info.event.extendedProps.venue ?? "",
+        subjectId: info.event.extendedProps.subjectId,
       });
-      calendar.updateEvent(String(event.id), String(event.calendarId), changes);
-    };
-
-    const deleteHandler: ExternalEventTypes["beforeDeleteEvent"] = (event) => {
-      const appId = String((event.raw as { appId?: string } | undefined)?.appId ?? event.id ?? "");
-      if (!appId || (event.raw as { appType?: string } | undefined)?.appType !== "custom") return;
-      deleteRef.current(appId);
-      calendar.deleteEvent(String(event.id), String(event.calendarId));
-    };
-
-    const clickEventHandler: ExternalEventTypes["clickEvent"] = (ev) => {
-      const e = ev as { event: any };
-      clickEventRef.current?.(e.event);
-    };
-
-    calendar.on("selectDateTime", selectDateTimeHandler);
-    calendar.on("beforeUpdateEvent", updateHandler);
-    calendar.on("beforeDeleteEvent", deleteHandler);
-    calendar.on("clickEvent", clickEventHandler);
-
-    // Click day name to select date
-    calendar.on("clickDayName", (event: unknown) => {
-      const ev = event as { date: string };
-      dateRef.current?.(new Date(`${ev.date}T00:00:00`));
-    });
-
-    calendar.setDate(weekStart);
-    calendar.scrollToNow("auto");
-
-    return () => {
-      calendar.off("selectDateTime", selectDateTimeHandler);
-      calendar.off("beforeUpdateEvent", updateHandler);
-      calendar.off("beforeDeleteEvent", deleteHandler);
-      calendar.off("clickEvent", clickEventHandler);
-      calendar.destroy();
-      calendarRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    } else if (appType === "assignment") {
+      updateAssignRef.current(appId, {
+        due: toIsoDate(start),
+        start: timeFromDate(start),
+        end: timeFromDate(end),
+      });
+    } else {
+      // exam resize would require time fields on the exam model
+      info.revert();
+    }
   }, []);
 
-  useEffect(() => {
-    const calendar = calendarRef.current;
-    if (!calendar) return;
-    calendar.setCalendars(calendars);
-    calendar.clear();
-    const toastEvents = events.flatMap((event) => {
-      const isRecurringClass = event.type === "class" && !event.date;
-      return semesterClassDates(event, selectedCalendar).map((date) => {
-        const id = isRecurringClass ? `${event.id}-${date}` : event.id;
-        const isAllDay = event.type === "assignment";
-        return {
-          id,
-          calendarId: event.subjectId ?? "custom",
-          title: event.type === "class" ? `${event.code} · ${event.name}` : event.name,
-          body: event.weeks,
-          category: isAllDay ? "allday" : "time",
-          start: isAllDay ? new Date(`${date}T00:00:00`) : new Date(`${date}T${event.start}:00`),
-          end: isAllDay ? new Date(`${date}T23:59:00`) : new Date(`${date}T${event.end}:00`),
-          location: event.venue,
-          isReadOnly: event.type !== "custom",
-          color: "#ffffff",
-          backgroundColor: event.color,
-          dragBackgroundColor: event.color,
-          borderColor: event.color,
-          raw: { appId: event.id, appType: event.type, appDate: date, code: event.code },
-        };
-      });
-    });
-    calendar.createEvents(toastEvents as Parameters<Calendar["createEvents"]>[0]);
-  }, [calendars, events, selectedCalendar]);
+  const handleEventDidMount = useCallback((info: EventMountArg) => {
+    const el = info.el;
+    const appType = info.event.extendedProps.appType as string;
+    const appId = info.event.extendedProps.appId as string;
+    if (!appId) return;
+    const onCtx = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      ctxMenuRef.current?.(appId, appType, e.clientX, e.clientY);
+    };
+    el.addEventListener("contextmenu", onCtx);
+    // cleanup when the event element is removed is handled by FC automatically
+  }, []);
 
-  useEffect(() => {
-    const calendar = calendarRef.current;
-    if (!calendar) return;
-    calendar.setDate(weekStart);
-    calendar.render();
-  }, [weekStart]);
+  const handleDateClick = useCallback((info: { date: Date }) => {
+    dateRef.current?.(info.date);
+  }, []);
 
-  return <div ref={hostRef} className="toast-calendar-host" style={{ height: "100%" }} />;
+  return (
+    <div className="fc-calendar-host" style={{ height: "100%" }}>
+      <FullCalendar
+        ref={calendarRef}
+        plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+        initialView="timeGridWeek"
+        headerToolbar={false}
+        firstDay={1}
+        slotMinTime={`${String(HOUR_START).padStart(2, "0")}:00:00`}
+        slotMaxTime={`${String(HOUR_END).padStart(2, "0")}:00:00`}
+        editable={true}
+        eventResizableFromStart={true}
+        selectable={true}
+        selectMirror={true}
+        allDaySlot={true}
+        slotDuration="00:30:00"
+        height="100%"
+        events={fcEvents}
+        eventClick={handleEventClick}
+        select={handleSelect}
+        eventDrop={handleEventDrop}
+        eventResize={handleEventResize}
+        eventDidMount={handleEventDidMount}
+        dateClick={handleDateClick}
+        nowIndicator={true}
+        scrollTime={`${String(new Date().getHours()).padStart(2, "0")}:00:00`}
+      />
+    </div>
+  );
 }

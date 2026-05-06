@@ -1,25 +1,28 @@
-import { Calendar as CalendarIcon, ChevronRight, Plus, FileText, BookOpen, Lightbulb, Clock, Sparkles } from "lucide-react";
-import type { CalendarEvent, Subject, Page, Conversation, AISettings, Assignment, MoodleFile, UserProfile } from "../types";
+import { Calendar as CalendarIcon, ChevronRight, Clock, Sparkles, BookOpen } from "lucide-react";
+import type { CalendarEvent, Subject, Page, Conversation, AISettings, Assignment, MoodleFile, UserProfile, ChatFolder, ChatImage } from "../types";
 import { ChatPanel } from "../components/ChatPanel";
 import { Avatar } from "../components/Avatar";
+import { MY_SPACE_CODE } from "../lib/utils";
 
 export function Dashboard({
   today, todayEvents, subjects, conversation, conversations,
   sendChat, loadingConversationId, aiSettings, setAISettings,
-  activeConversationId, setActiveConversationId,
+  activeConversationId, setConversationModel, setActiveConversationId,
   createConversation, deleteConversation, renameConversation,
   moodleFiles, userProfile, setUserProfile, assignments, todaysTasks, upcomingEvents, activeSubject,
   go,
+  chatFolders, createChatFolder, renameChatFolder, deleteChatFolder, moveConversationToFolder,
 }: {
   today: Date;
   todayEvents: CalendarEvent[];
   subjects: Subject[];
   conversation: Conversation | null;
   conversations: Record<string, Conversation>;
-  sendChat: (text: string, displayText?: string, fileIds?: string[]) => void;
+  sendChat: (text: string, displayText?: string, fileIds?: string[], contextPrefix?: string, targetConversationId?: string, images?: ChatImage[]) => void;
   loadingConversationId: string | null;
   aiSettings: AISettings;
   setAISettings: (v: AISettings) => void;
+  setConversationModel: (id: string, model: string, provider: AISettings["provider"]) => void;
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
   createConversation: (firstUserText?: string) => string;
@@ -33,6 +36,11 @@ export function Dashboard({
   upcomingEvents: CalendarEvent[];
   activeSubject?: Subject;
   go: (p: Page) => void;
+  chatFolders: ChatFolder[];
+  createChatFolder: (name: string) => string;
+  renameChatFolder: (id: string, name: string) => void;
+  deleteChatFolder: (id: string) => void;
+  moveConversationToFolder: (convId: string, folderId: string | undefined) => void;
 }) {
   const dateText = today.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const loading = loadingConversationId !== null && activeConversationId === loadingConversationId;
@@ -40,14 +48,8 @@ export function Dashboard({
   const hour = today.getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
-  const tasksDueThisWeek = assignments.filter((a) => {
-    const todayStr = today.toISOString().slice(0, 10);
-    const weekLater = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
-    return a.due >= todayStr && a.due <= weekLater && a.status !== "graded";
-  });
-
   const nextClass = todayEvents[0] ?? null;
-  const nextDeadline = assignments.sort((a, b) => a.due.localeCompare(b.due))[0] ?? null;
+  const nextDeadline = assignments.filter((a) => !!a.due).sort((a, b) => a.due.localeCompare(b.due))[0] ?? null;
 
   return (
     <div className="dashboard-simple">
@@ -60,6 +62,7 @@ export function Dashboard({
             loading={loading}
             aiSettings={aiSettings}
             setAISettings={setAISettings}
+            setConversationModel={setConversationModel}
             activeConversationId={activeConversationId}
             setActiveConversationId={setActiveConversationId}
             createConversation={createConversation}
@@ -67,6 +70,12 @@ export function Dashboard({
             renameConversation={renameConversation}
             moodleFiles={moodleFiles}
             userProfile={userProfile}
+            subjects={subjects}
+            chatFolders={chatFolders}
+            createChatFolder={createChatFolder}
+            renameChatFolder={renameChatFolder}
+            deleteChatFolder={deleteChatFolder}
+            moveConversationToFolder={moveConversationToFolder}
           />
         </div>
       </div>
@@ -77,29 +86,8 @@ export function Dashboard({
           <Avatar profile={userProfile} size={40} alt={userName} />
           <div>
             <h2 className="dash-greeting">{greeting}, {userName}</h2>
-            <p className="dash-summary">
-              {dateText}
-              {tasksDueThisWeek.length > 0
-                ? ` · ${tasksDueThisWeek.length} task${tasksDueThisWeek.length !== 1 ? "s" : ""} due this week`
-                : ""}
-            </p>
+            <p className="dash-summary">{dateText}</p>
           </div>
-        </div>
-
-        {/* Quick actions */}
-        <div className="dash-quick-actions">
-          <button className="dash-action" onClick={() => { createConversation(); go("dashboard"); }}>
-            <Lightbulb size={15} /> Plan my week
-          </button>
-          <button className="dash-action" onClick={() => go("knowledge")}>
-            <BookOpen size={15} /> Open notes
-          </button>
-          <button className="dash-action" onClick={() => go("assignments")}>
-            <Plus size={15} /> Create assignment
-          </button>
-          <button className="dash-action" onClick={() => go("moodle")}>
-            <FileText size={15} /> Browse files
-          </button>
         </div>
 
         {/* Compact academic summary */}
@@ -133,7 +121,7 @@ export function Dashboard({
           <div className="today-card-header">
             <h2>Today&apos;s tasks</h2>
             <button className="btn btn-ghost" style={{ fontSize: "0.82rem", padding: "4px 8px" }} onClick={() => go("assignments")}>
-              Assignments <ChevronRight size={12} />
+              Tasks <ChevronRight size={12} />
             </button>
           </div>
           {todaysTasks.length > 0 ? (
@@ -203,8 +191,8 @@ export function Dashboard({
             <h2>Subjects</h2>
           </div>
           <div className="dash-subjects">
-            {subjects.slice(0, 6).map((s) => {
-              const nextDeadline = assignments.find((a) => a.subjectId === s.id);
+            {subjects.filter((s) => s.code !== MY_SPACE_CODE).slice(0, 6).map((s) => {
+              const nextDeadline = assignments.filter((a) => !!a.due && a.subjectId === s.id).sort((a, b) => a.due.localeCompare(b.due))[0];
               return (
                 <button key={s.id} className="dash-subject-card" onClick={() => go("knowledge")}>
                   <span className="dash-subject-dot" style={{ background: s.color }} />

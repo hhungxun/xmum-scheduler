@@ -1,39 +1,72 @@
 import { FormEvent, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import {
   Send, Bot, Sparkles, Calendar, FileText, BookOpen,
-  Trash2, Plus, Search, MessageSquare, ChevronDown, Pencil, Cpu, Paperclip, X,
+  Trash2, Plus, Search, MessageSquare, ChevronDown, Pencil, Cpu, Paperclip, X, Star,
+  FolderPlus, Folder, FolderOpen, ChevronRight as ChevronRightIcon, MoreHorizontal, ImagePlus,
 } from "lucide-react";
-import type { Conversation, AISettings, ChatMessage, MoodleFile, UserProfile } from "../types";
+import type { Conversation, AISettings, ChatMessage, ChatImage, MoodleFile, UserProfile, Subject, ChatFolder } from "../types";
 import { moodleFileKey } from "../lib/utils";
 import { Avatar } from "./Avatar";
 
 /* ─── slash commands with groups ─── */
 const slashCommands = [
-  { id: "/plan", label: "Plan my week", group: "AI Skills", icon: <Calendar size={13} />, prompt: "Analyze my upcoming assignments, exams, and calendar events for this week. Create a realistic study plan and suggest any calendar events I should add." },
-  { id: "/schedule-study", label: "Schedule study sessions", group: "AI Skills", icon: <Calendar size={13} />, prompt: "Based on my exam dates and assignment deadlines, suggest and create study session calendar events. Spread them reasonably across available days." },
-  { id: "/summarize-note", label: "Summarize current note", group: "AI Skills", icon: <BookOpen size={13} />, prompt: "Summarize the current note I'm viewing. Highlight key concepts, formulas, and any action items." },
-  { id: "/create-assignment", label: "Create assignment", group: "Assignment", icon: <FileText size={13} />, prompt: "I want to create a new assignment. Ask me for the subject, title, due date, and weight, then create it using an action block." },
-  { id: "/create-exam", label: "Create exam", group: "Assignment", icon: <Sparkles size={13} />, prompt: "I want to create a new exam or quiz. Ask me for the subject, title, type, date, and weight, then create it using an action block." },
+  { id: "/plan", label: "Plan my week", group: "Planning", icon: <Calendar size={13} />, prompt: "Analyze my upcoming tasks, exams, and calendar events for this week. Create a realistic study plan and suggest any calendar events I should add." },
+  { id: "/schedule-study", label: "Schedule study sessions", group: "Planning", icon: <Calendar size={13} />, prompt: "Based on my exam dates and task deadlines, suggest and create study session calendar events. Spread them reasonably across available days." },
+  { id: "/summarize-note", label: "Summarize current note", group: "Notes", icon: <BookOpen size={13} />, prompt: "Summarize the current note I'm viewing. Highlight key concepts, formulas, and any action items." },
+  { id: "/explain-file", label: "Explain a Moodle file", group: "Notes", icon: <FileText size={13} />, prompt: "I'll attach a Moodle file with @. Explain what it covers, the key concepts, and what I should focus on for revision." },
+  { id: "/revision-questions", label: "Generate revision questions", group: "Notes", icon: <Sparkles size={13} />, prompt: "Using my notes and any attached materials, generate 5–10 revision questions of mixed difficulty with brief answer hints." },
+  { id: "/create-assignment", label: "Create task", group: "Create", icon: <FileText size={13} />, prompt: "I want to create a new task. Ask me for the subject, title, due date, and weight, then create it using an action block." },
+  { id: "/create-exam", label: "Create exam", group: "Create", icon: <Sparkles size={13} />, prompt: "I want to create a new exam or quiz. Ask me for the subject, title, type, date, and weight, then create it using an action block." },
+  { id: "/track-exams", label: "Track exam progress", group: "Insights", icon: <Sparkles size={13} />, prompt: "Summarize my current exam progress: weighted score so far, average, what I still need to score on remaining assessments to hit my target, and which subjects need attention." },
 ];
 
-const modelOptions: Record<string, { value: string; label: string }[]> = {
-  openai: [
-    { value: "gpt-4o", label: "GPT-4o" },
-    { value: "gpt-4o-mini", label: "GPT-4o mini" },
-    { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
-  ],
-  anthropic: [
-    { value: "claude-3-5-sonnet-latest", label: "Claude 3.5 Sonnet" },
-    { value: "claude-3-5-haiku-latest", label: "Claude 3.5 Haiku" },
-    { value: "claude-3-opus-latest", label: "Claude 3 Opus" },
-  ],
-  "claude-code": [{ value: "claude", label: "Claude Code" }],
-  "codex-cli": [{ value: "codex", label: "Codex CLI" }],
-  opencode: [{ value: "opencode", label: "OpenCode" }],
+type AIModelDef = {
+  id: string;
+  name: string;
+  provider: string;
+  providerLabel: string;
+  tag?: string;
 };
 
+const ALL_MODELS: AIModelDef[] = [
+  { id: "gpt-5", name: "GPT-5", provider: "openai", providerLabel: "OpenAI" },
+  { id: "gpt-5-mini", name: "GPT-5 Mini", provider: "openai", providerLabel: "OpenAI" },
+  { id: "gpt-5-nano", name: "GPT-5 Nano", provider: "openai", providerLabel: "OpenAI", tag: "fast" },
+  { id: "gpt-4o", name: "GPT-4o", provider: "openai", providerLabel: "OpenAI" },
+  { id: "gpt-4o-mini", name: "GPT-4o Mini", provider: "openai", providerLabel: "OpenAI", tag: "fast" },
+  { id: "gpt-4-turbo", name: "GPT-4 Turbo", provider: "openai", providerLabel: "OpenAI" },
+  { id: "o3-mini", name: "o3-mini", provider: "openai", providerLabel: "OpenAI", tag: "reasoning" },
+  { id: "o1", name: "o1", provider: "openai", providerLabel: "OpenAI", tag: "reasoning" },
+  { id: "claude-4-opus-latest", name: "Claude 4 Opus", provider: "anthropic", providerLabel: "Anthropic" },
+  { id: "claude-4-sonnet-latest", name: "Claude 4 Sonnet", provider: "anthropic", providerLabel: "Anthropic" },
+  { id: "claude-4-haiku-latest", name: "Claude 4 Haiku", provider: "anthropic", providerLabel: "Anthropic", tag: "fast" },
+  { id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet", provider: "anthropic", providerLabel: "Anthropic" },
+  { id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku", provider: "anthropic", providerLabel: "Anthropic", tag: "fast" },
+  { id: "claude-3-opus-latest", name: "Claude 3 Opus", provider: "anthropic", providerLabel: "Anthropic" },
+  { id: "claude", name: "Claude Code", provider: "claude-code", providerLabel: "Claude Code" },
+  { id: "codex", name: "Codex CLI", provider: "codex-cli", providerLabel: "Codex CLI" },
+  { id: "opencode", name: "OpenCode", provider: "opencode", providerLabel: "OpenCode" },
+  { id: "opencode-go", name: "OpenCode Go", provider: "opencode", providerLabel: "OpenCode", tag: "fast" },
+  { id: "opencode-zen", name: "OpenCode Zen", provider: "opencode", providerLabel: "OpenCode", tag: "balanced" },
+];
+
+type BrandDef = {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  color: string;
+};
+
+const BRANDS: BrandDef[] = [
+  { id: "openai", label: "OpenAI", icon: <Sparkles size={16} />, color: "#10a37f" },
+  { id: "anthropic", label: "Anthropic", icon: <Bot size={16} />, color: "#d97757" },
+  { id: "claude-code", label: "Claude Code", icon: <Bot size={16} />, color: "#7c3aed" },
+  { id: "codex-cli", label: "Codex", icon: <Cpu size={16} />, color: "#3b82f6" },
+  { id: "opencode", label: "OpenCode", icon: <Sparkles size={16} />, color: "#06b6d4" },
+];
+
 function modelLabel(provider: string, model: string): string {
-  return modelOptions[provider]?.find((m) => m.value === model)?.label ?? model;
+  return ALL_MODELS.find((m) => m.provider === provider && m.id === model)?.name ?? model;
 }
 function formatDate(iso: string) {
   const d = new Date(iso);
@@ -46,6 +79,12 @@ function diffDays(a: Date, b: Date) { return Math.abs((a.getTime() - b.getTime()
 function visibleMessages(conv: Conversation | null): ChatMessage[] {
   if (!conv) return [];
   return conv.messages.filter((m) => m.role !== "system");
+}
+
+function modelSupportsImages(provider: string, model: string): boolean {
+  // OpenAI's reasoning models (o1, o3-mini) are text-only, no vision
+  if (provider === "openai" && (model === "o1" || model === "o3-mini")) return false;
+  return true;
 }
 
 /* ═══════════════════════════════════════════
@@ -224,15 +263,18 @@ export function ChatPanel({
   conversation, conversations, onSend, loading, aiSettings, setAISettings,
   activeConversationId, setActiveConversationId, createConversation,
   deleteConversation, renameConversation, moodleFiles = [],
+  setConversationModel,
   placeholder = "How can I help you today?", compact = false,
-  userProfile,
+  userProfile, subjects = [],
+  chatFolders = [], createChatFolder, renameChatFolder, deleteChatFolder, moveConversationToFolder,
 }: {
   conversation: Conversation | null;
   conversations: Record<string, Conversation>;
-  onSend: (text: string, displayText?: string, fileIds?: string[]) => void;
+  onSend: (text: string, displayText?: string, fileIds?: string[], contextPrefix?: string, targetConversationId?: string, images?: ChatImage[]) => void;
   loading?: boolean;
   aiSettings: AISettings;
   setAISettings: (v: AISettings) => void;
+  setConversationModel?: (id: string, model: string, provider: AISettings["provider"]) => void;
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
   createConversation: (firstUserText?: string) => string;
@@ -242,6 +284,12 @@ export function ChatPanel({
   placeholder?: string;
   compact?: boolean;
   userProfile?: UserProfile;
+  subjects?: Subject[];
+  chatFolders?: ChatFolder[];
+  createChatFolder?: (name: string) => string;
+  renameChatFolder?: (id: string, name: string) => void;
+  deleteChatFolder?: (id: string) => void;
+  moveConversationToFolder?: (convId: string, folderId: string | undefined) => void;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -254,7 +302,24 @@ export function ChatPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
+  const [selectedBrand, setSelectedBrand] = useState<string>("openai");
+  const [selectedFileGroupId, setSelectedFileGroupId] = useState("");
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
   const [attachedFiles, setAttachedFiles] = useState<MoodleFile[]>([]);
+  const [attachedImages, setAttachedImages] = useState<{ data: string; mediaType: string; preview: string }[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [editFolderName, setEditFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [convMenuId, setConvMenuId] = useState<string | null>(null);
+  const folderMenuRef = useRef<HTMLDivElement>(null);
+  const convMenuRef = useRef<HTMLDivElement>(null);
+  // Drag-and-drop state
+  const [draggingConvId, setDraggingConvId] = useState<string | null>(null);
+  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null); // folder id or "__unfiled__"
 
   const msgs = visibleMessages(conversation);
   const isNewChat = !conversation || msgs.length === 0;
@@ -267,10 +332,97 @@ export function ChatPanel({
   }, [conversations, searchQuery]);
 
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [msgs, loading]);
+
+  // Global paste listener — catches image paste from clipboard across all browsers/WebKit2GTK
+  useEffect(() => {
+    function onDocPaste(e: ClipboardEvent) {
+      // Only process if our textarea is focused
+      if (document.activeElement !== inputRef.current) return;
+      const cd = e.clipboardData;
+      if (!cd) return;
+      let hasImage = false;
+      try {
+        // Check files first (WebKit/Linux often exposes here)
+        if (cd.files && cd.files.length > 0) {
+          for (let i = 0; i < cd.files.length; i++) {
+            if (cd.files[i].type.startsWith("image/")) {
+              hasImage = true;
+              processImageFile(cd.files[i]);
+            }
+          }
+        }
+        // Check items (Chromium exposes images here)
+        if (!hasImage && cd.items) {
+          for (let i = 0; i < cd.items.length; i++) {
+            if (cd.items[i].type.startsWith("image/")) {
+              const file = cd.items[i].getAsFile();
+              if (file) { hasImage = true; processImageFile(file); }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Paste clipboard access error:", err);
+      }
+      // Async fallback: try navigator.clipboard.read() if nothing found
+      if (!hasImage) {
+        navigator.clipboard.read?.().then((items) => {
+          for (const item of items) {
+            const imgType = item.types.find((t: string) => t.startsWith("image/"));
+            if (imgType) {
+              item.getType(imgType).then((blob: Blob) => {
+                processImageFile(new File([blob], "clipboard-image", { type: imgType }));
+              });
+            }
+          }
+        }).catch(() => { /* clipboard read not available or denied */ });
+        return;
+      }
+      if (hasImage) e.preventDefault();
+    }
+    document.addEventListener("paste", onDocPaste);
+    return () => document.removeEventListener("paste", onDocPaste);
+  }, []);
+
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setModelOpen(false);
+      }
+    }
+    if (modelOpen) { document.addEventListener("mousedown", onClick); return () => document.removeEventListener("mousedown", onClick); }
+  }, [modelOpen]);
   useEffect(() => {
     const el = inputRef.current; if (!el) return;
     el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 180) + "px";
   }, [inputValue]);
+
+  // close folder/conv context menus on outside click
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (folderMenuRef.current && !folderMenuRef.current.contains(e.target as Node)) setFolderMenuId(null);
+      if (convMenuRef.current && !convMenuRef.current.contains(e.target as Node)) setConvMenuId(null);
+    }
+    if (folderMenuId || convMenuId) { document.addEventListener("mousedown", onClick); return () => document.removeEventListener("mousedown", onClick); }
+  }, [folderMenuId, convMenuId]);
+
+  function toggleFolderCollapse(id: string) {
+    setCollapsedFolders((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  }
+
+  // group conversations by folder
+  const { folderedConvs, unfiledConvs } = useMemo(() => {
+    const foldered = new Map<string, Conversation[]>();
+    const unfiled: Conversation[] = [];
+    for (const conv of conversationList) {
+      if (conv.folderId && chatFolders.some((f) => f.id === conv.folderId)) {
+        if (!foldered.has(conv.folderId)) foldered.set(conv.folderId, []);
+        foldered.get(conv.folderId)!.push(conv);
+      } else {
+        unfiled.push(conv);
+      }
+    }
+    return { folderedConvs: foldered, unfiledConvs: unfiled };
+  }, [conversationList, chatFolders]);
 
   // fuzzy match for slash
   const slashMatches = useMemo(() => {
@@ -292,11 +444,67 @@ export function ChatPanel({
   }, [slashMatches]);
 
   const filteredFiles = useMemo(() => {
-    if (!atOpen) return [];
+    const empty = { grouped: new Map<string, { subject: Subject; files: MoodleFile[] }>(), unmatchedFiles: [] as MoodleFile[] };
+    if (!atOpen) return empty;
     const q = atQuery(inputValue).toLowerCase();
-    if (!q) return moodleFiles.slice(0, 12);
-    return moodleFiles.filter((f) => f.filename.toLowerCase().includes(q)).slice(0, 12);
-  }, [atOpen, inputValue, moodleFiles]);
+    
+    // Group files by subject
+    const grouped: Map<string, { subject: Subject; files: MoodleFile[] }> = new Map();
+    
+    for (const subject of subjects) {
+      const subjectFiles = moodleFiles.filter((f) => {
+        const codeMatch = f.courseName.toUpperCase().includes(subject.code.toUpperCase());
+        const nameMatch = f.courseName.toLowerCase().includes(subject.name.toLowerCase());
+        return codeMatch || nameMatch;
+      });
+      
+      if (subjectFiles.length > 0) {
+        const filtered = q
+          ? subjectFiles.filter((f) => f.filename.toLowerCase().includes(q))
+          : subjectFiles;
+        if (filtered.length > 0) {
+          grouped.set(subject.id, { subject, files: filtered.slice(0, 8) });
+        }
+      }
+    }
+    
+    // Also include unmatched files
+    const matchedFileIds = new Set<string>();
+    for (const group of grouped.values()) {
+      for (const file of group.files) {
+        matchedFileIds.add(moodleFileKey(file));
+      }
+    }
+    
+    const unmatchedFiles = moodleFiles
+      .filter((f) => !matchedFileIds.has(moodleFileKey(f)))
+      .filter((f) => !q || f.filename.toLowerCase().includes(q))
+      .slice(0, 8);
+    
+    return { grouped, unmatchedFiles };
+  }, [atOpen, inputValue, moodleFiles, subjects]);
+
+  const fileGroups = useMemo(() => {
+    const groups = Array.from(filteredFiles.grouped.values()).map(({ subject, files }) => ({
+      id: subject.id,
+      label: subject.code,
+      sublabel: subject.name,
+      color: subject.color,
+      files,
+    }));
+    if (filteredFiles.unmatchedFiles.length) {
+      groups.push({
+        id: "__other__",
+        label: "Other",
+        sublabel: "Unmatched Moodle files",
+        color: "var(--muted)",
+        files: filteredFiles.unmatchedFiles,
+      });
+    }
+    return groups;
+  }, [filteredFiles]);
+
+  const selectedFileGroup = fileGroups.find((group) => group.id === selectedFileGroupId) ?? fileGroups[0];
 
   function atQuery(val: string): string {
     const idx = val.lastIndexOf("@");
@@ -308,25 +516,45 @@ export function ChatPanel({
 
   // flatten items for arrow-key nav
   const slashFlat = slashOpen ? slashMatches : [];
-  const menuItems = slashOpen ? slashFlat : filteredFiles;
+  const menuItems = slashOpen ? slashFlat : [];
   const menuLength = menuItems.length;
+  
+  // Flatten files for keyboard navigation
+  const fileFlat = useMemo(() => atOpen ? selectedFileGroup?.files ?? [] : [], [atOpen, selectedFileGroup]);
+  const fileLength = fileFlat.length;
+
+  useEffect(() => {
+    if (!atOpen) return;
+    if (!fileGroups.length) {
+      setSelectedFileGroupId("");
+      return;
+    }
+    if (!fileGroups.some((group) => group.id === selectedFileGroupId)) {
+      setSelectedFileGroupId(fileGroups[0].id);
+    }
+  }, [atOpen, fileGroups, selectedFileGroupId]);
 
   function resetMenu() { setHighlightIdx(0); setSlashOpen(false); setAtOpen(false); }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const text = inputValue.trim();
-    if (!text || loading) return;
+    if ((!text && !attachedImages.length) || loading) return;
+    const finalText = text || (attachedImages.length ? "Analyze this image" : "");
+
+    const imgPayload: ChatImage[] | undefined = attachedImages.length
+      ? attachedImages.map((img) => ({ data: img.data, mediaType: img.mediaType as ChatImage["mediaType"] }))
+      : undefined;
 
     const command = slashOpen ? slashFlat[highlightIdx] ?? null : null;
     if (command && slashOpen) {
-      const rest = text.slice(command.id.length).trim();
+      const rest = finalText.slice(command.id.length).trim();
       const prompt = `${command.prompt}${rest ? "\n" + rest : ""}`;
-      onSend(prompt, text, attachedFiles.map((f) => moodleFileKey(f)));
+      onSend(prompt, finalText, attachedFiles.map((f) => moodleFileKey(f)), undefined, undefined, imgPayload);
     } else {
-      onSend(text, undefined, attachedFiles.map((f) => moodleFileKey(f)));
+      onSend(finalText, undefined, attachedFiles.map((f) => moodleFileKey(f)), undefined, undefined, imgPayload);
     }
-    setInputValue(""); setAttachedFiles([]); resetMenu();
+    setInputValue(""); setAttachedFiles([]); setAttachedImages([]); resetMenu();
   }
 
   function handleInputChange(value: string) {
@@ -358,7 +586,76 @@ export function ChatPanel({
     setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
   }
 
-  const currentModelLabel = modelLabel(aiSettings.provider, conversation?.model ?? aiSettings.model);
+  function removeAttachedImage(idx: number) {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function processImageFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const commaIdx = dataUrl.indexOf(",");
+      if (commaIdx === -1) return;
+      const base64 = dataUrl.slice(commaIdx + 1);
+      const header = dataUrl.slice(0, commaIdx);
+      const mediaType = header.match(/data:([^;]+)/)?.[1] ?? "image/png";
+      setAttachedImages((prev) => [...prev, { data: base64, mediaType, preview: dataUrl }]);
+    };
+    reader.readAsDataURL(file);
+  }
+
+
+  function handleDrop(e: React.DragEvent) {
+    const files = e.dataTransfer.files;
+    const imageFiles: File[] = [];
+    for (let i = 0; i < files.length; i++) {
+      if (files[i].type.startsWith("image/")) imageFiles.push(files[i]);
+    }
+    if (!imageFiles.length) return;
+    e.preventDefault();
+    for (const file of imageFiles) {
+      processImageFile(file);
+    }
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    // Check if any dragged item is an image
+    const types = e.dataTransfer.types;
+    if (types.includes("Files") || types.some((t) => t.startsWith("image/"))) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function handleImageAttach() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp,image/gif";
+    input.multiple = true;
+    input.onchange = () => {
+      const files = input.files;
+      if (!files) return;
+      for (let i = 0; i < files.length; i++) {
+        processImageFile(files[i]);
+      }
+    };
+    input.click();
+  }
+
+  const filteredModels = useMemo(() => {
+    let models = ALL_MODELS.filter((m) => m.provider === selectedBrand);
+    if (modelSearch.trim()) {
+      const q = modelSearch.toLowerCase();
+      models = models.filter((m) => m.name.toLowerCase().includes(q));
+    }
+    return models;
+  }, [selectedBrand, modelSearch]);
+
+  const currentModel = conversation?.model ?? aiSettings.model;
+  const currentModelDef = ALL_MODELS.find((m) => m.id === currentModel);
+  const currentProvider = conversation?.provider ?? currentModelDef?.provider ?? aiSettings.provider;
+  const currentModelLabel = currentModelDef?.name ?? modelLabel(aiSettings.provider, currentModel);
+  const imagesSupported = modelSupportsImages(currentProvider, currentModel);
 
   const chatBody = (
     <>
@@ -366,9 +663,15 @@ export function ChatPanel({
         {isNewChat && !compact && (
           <div className="chat-welcome-claude">
             <h2>Your Academic Assistant</h2>
-            <p className="muted">Ask about your schedule, notes, assignments, and exams.</p>
+            <p className="muted" style={{ marginBottom: 8 }}>
+              I can see your timetable, tasks, exams, notes and synced Moodle files — and I can act on them for you.
+            </p>
+            <p className="muted" style={{ fontSize: "0.78rem", marginBottom: 18 }}>
+              Type <code style={{ background: "var(--surface)", padding: "0 5px", borderRadius: 4 }}>/</code> to browse skills,
+              or <code style={{ background: "var(--surface)", padding: "0 5px", borderRadius: 4 }}>@</code> to attach a Moodle file.
+            </p>
             <div className="chat-suggestion-grid">
-              {slashCommands.slice(0, 4).map((cmd) => (
+              {slashCommands.slice(0, 6).map((cmd) => (
                 <button key={cmd.id} className="chat-suggestion" onClick={() => insertCommand(cmd)}>
                   <span className="row" style={{ gap: 8, marginBottom: 4 }}>
                     {cmd.icon} <strong style={{ fontSize: "0.86rem" }}>{cmd.label}</strong>
@@ -388,7 +691,16 @@ export function ChatPanel({
                 <Avatar profile={userProfile} size={26} alt="You" />
               </div>
             )}
-            <div className="msg-body"><MarkdownContent content={m.content} /></div>
+            <div className="msg-body">
+              {m.images && m.images.length > 0 && (
+                <div className="msg-images">
+                  {m.images.map((img, i) => (
+                    <img key={i} src={`data:${img.mediaType};base64,${img.data}`} alt={`Attached ${i + 1}`} className="msg-image-thumb" />
+                  ))}
+                </div>
+              )}
+              <MarkdownContent content={m.content} />
+            </div>
           </div>
         ))}
         {loading && (
@@ -432,25 +744,43 @@ export function ChatPanel({
         )}
 
         {/* @mention file menu */}
-        {atOpen && filteredFiles.length > 0 && (
-          <div className="slash-menu" style={{ maxWidth: 420 }}>
-            {filteredFiles.map((file, fi) => (
-              <button key={moodleFileKey(file)}
-                className={`slash-item ${fi === highlightIdx ? "highlight" : ""}`}
-                onMouseEnter={() => setHighlightIdx(fi)}
-                onClick={() => insertFile(file)}>
-                <Paperclip size={13} />
-                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>
-                  <strong>{file.filename}</strong>
-                  <span className="muted" style={{ marginLeft: 8, fontSize: "0.78rem" }}>
-                    {file.installed ? "Synced" : "Moodle"} · {file.courseName}
+        {atOpen && (
+          <div className="slash-menu chat-file-picker">
+            <div className="chat-file-picker-subjects">
+              {fileGroups.map((group) => (
+                <button
+                  key={group.id}
+                  className={`chat-file-picker-subject ${selectedFileGroup?.id === group.id ? "active" : ""}`}
+                  onMouseDown={(e) => { e.preventDefault(); setSelectedFileGroupId(group.id); setHighlightIdx(0); }}
+                >
+                  <span className="swatch" style={{ width: 8, height: 8, borderRadius: "50%", background: group.color, display: "inline-block" }} />
+                  <span>
+                    <strong>{group.label}</strong>
+                    <small>{group.files.length} files</small>
                   </span>
-                </span>
-              </button>
-            ))}
-            {filteredFiles.length === 0 && atOpen && (
-              <div className="muted" style={{ padding: "8px 12px", fontSize: "0.8rem" }}>No matching files</div>
-            )}
+                </button>
+              ))}
+            </div>
+            <div className="chat-file-picker-files">
+              {fileFlat.length ? fileFlat.map((file, index) => (
+                <button
+                  key={moodleFileKey(file)}
+                  className={`slash-item ${index === highlightIdx ? "highlight" : ""}`}
+                  onMouseEnter={() => setHighlightIdx(index)}
+                  onClick={() => insertFile(file)}
+                >
+                  <Paperclip size={13} />
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>
+                    <strong>{file.filename}</strong>
+                    <span className="muted" style={{ marginLeft: 8, fontSize: "0.78rem" }}>
+                      {file.installed ? "Synced" : "Moodle"} · {file.courseName}
+                    </span>
+                  </span>
+                </button>
+              )) : (
+                <div className="muted" style={{ padding: "8px 12px", fontSize: "0.8rem" }}>No matching files</div>
+              )}
+            </div>
           </div>
         )}
 
@@ -468,8 +798,30 @@ export function ChatPanel({
               ))}
             </div>
           )}
+          {/* Image previews */}
+          {attachedImages.length > 0 && (
+            <>
+              <div className="attached-chips">
+                {attachedImages.map((img, i) => (
+                  <span key={i} className="file-chip">
+                    <img src={img.preview} alt="Attached" style={{ width: 16, height: 16, borderRadius: 3, objectFit: "cover" }} />
+                    <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.75rem" }}>Image {i + 1}</span>
+                    <button type="button" className="file-chip-x" onClick={() => removeAttachedImage(i)}><X size={10} /></button>
+                  </span>
+                ))}
+              </div>
+              {!imagesSupported && (
+                <div className="chat-image-warning">
+                  <ImagePlus size={12} />
+                  <span>{currentModelLabel} cannot see images. Change the model to one that supports vision (e.g. GPT-4o, Claude Sonnet).</span>
+                </div>
+              )}
+            </>
+          )}
           <textarea ref={inputRef} className="chat-textarea" placeholder={placeholder}
             disabled={loading} value={inputValue} rows={1}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
             onChange={(e) => handleInputChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") { resetMenu(); return; }
@@ -477,34 +829,98 @@ export function ChatPanel({
                 e.preventDefault(); handleSubmit(e); return;
               }
               if (slashOpen || atOpen) {
-                if (e.key === "ArrowDown") { e.preventDefault(); setHighlightIdx((p) => Math.min(p + 1, menuLength - 1)); }
+                const maxIdx = slashOpen ? menuLength - 1 : fileLength - 1;
+                if (e.key === "ArrowDown") { e.preventDefault(); setHighlightIdx((p) => Math.min(p + 1, Math.max(0, maxIdx))); }
                 else if (e.key === "ArrowUp") { e.preventDefault(); setHighlightIdx((p) => Math.max(p - 1, 0)); }
                 else if (e.key === "Enter") { e.preventDefault();
                   if (slashOpen) { const cmd = slashFlat[highlightIdx]; if (cmd) insertCommand(cmd); }
-                  else if (atOpen) { const file = filteredFiles[highlightIdx]; if (file) insertFile(file); }
+                  else if (atOpen) { const file = fileFlat[highlightIdx]; if (file) insertFile(file); }
                 }
               }
             }}
           />
           <div className="chat-composer-footer">
-            <div className="chat-model-picker">
-              <button type="button" className="chat-model-btn" onClick={() => setModelOpen(!modelOpen)}>
+            <div className="chat-model-picker" ref={modelDropdownRef}>
+              <button type="button" className="chat-model-btn" onClick={() => { setModelOpen(!modelOpen); setSelectedBrand(currentProvider); setModelSearch(""); }}>
                 <Cpu size={12} /><span>{currentModelLabel}</span><ChevronDown size={12} />
               </button>
               {modelOpen && (
-                <div className="chat-model-dropdown">
-                  {modelOptions[aiSettings.provider]?.map((m) => (
-                    <button key={m.value} className={`chat-model-option ${(conversation?.model ?? aiSettings.model) === m.value ? "active" : ""}`}
-                      onClick={() => { setAISettings({ ...aiSettings, model: m.value }); setModelOpen(false); }}>
-                      {m.label}
-                    </button>
-                  )) ?? <div className="muted" style={{ padding: "8px 12px", fontSize: "0.8rem" }}>No models</div>}
+                <div className="chat-model-dropdown model-dropdown-brand">
+                  <div className="model-dropdown-search">
+                    <Search size={12} className="muted" />
+                    <input
+                      autoFocus
+                      placeholder="Search models…"
+                      value={modelSearch}
+                      onChange={(e) => setModelSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") { setModelOpen(false); }
+                      }}
+                    />
+                  </div>
+                  <div className="model-dropdown-body">
+                    <div className="model-brand-sidebar">
+                      {BRANDS.map((brand) => {
+                        const isActive = selectedBrand === brand.id;
+                        return (
+                          <button
+                            key={brand.id}
+                            className={`model-brand-btn ${isActive ? "active" : ""}`}
+                            onClick={() => { setSelectedBrand(brand.id); setModelSearch(""); }}
+                            style={{ color: isActive ? brand.color : "var(--muted)" }}
+                          >
+                            {brand.icon}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="model-list-panel">
+                      <div className="model-list-header">
+                        <span style={{ fontWeight: 600, fontSize: "0.84rem" }}>
+                          {BRANDS.find((b) => b.id === selectedBrand)?.label}
+                        </span>
+                        <span className="muted" style={{ fontSize: "0.72rem" }}>
+                          {filteredModels.length} model{filteredModels.length !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      <div className="model-list">
+                        {filteredModels.length === 0 && (
+                          <div className="muted" style={{ padding: "10px 12px", fontSize: "0.8rem" }}>No models found</div>
+                        )}
+                        {filteredModels.map((m) => {
+                          const active = currentModel === m.id;
+                          return (
+                            <button key={`${m.provider}-${m.id}`} className={`model-option ${active ? "active" : ""}`}
+                              onClick={() => {
+                                setAISettings({ ...aiSettings, provider: m.provider as AISettings["provider"], model: m.id });
+                                if (conversation) setConversationModel?.(conversation.id, m.id, m.provider as AISettings["provider"]);
+                                setModelOpen(false);
+                              }}>
+                              <div className="model-option-left">
+                                {active && <Star size={12} style={{ color: "var(--accent)" }} />}
+                                <span className="model-option-name">{m.name}</span>
+                              </div>
+                              <div className="model-option-right">
+                                {m.tag && <span className="model-option-tag">{m.tag}</span>}
+                                <span className="model-option-provider">{m.providerLabel}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
-            <button className="chat-send-btn" aria-label="Send" disabled={loading || (!inputValue.trim() && attachedFiles.length === 0)}>
-              <Send size={15} />
-            </button>
+            <div className="chat-composer-actions">
+              <button type="button" className="chat-image-btn" aria-label="Attach image" onClick={handleImageAttach} title="Attach image (or paste from clipboard)">
+                <ImagePlus size={15} />
+              </button>
+              <button className="chat-send-btn" aria-label="Send" disabled={loading || (!inputValue.trim() && attachedFiles.length === 0 && attachedImages.length === 0)}>
+                <Send size={15} />
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -513,39 +929,236 @@ export function ChatPanel({
 
   if (compact) return <div className="chat-shell">{chatBody}</div>;
 
+  /* ─── Drag-and-drop helpers ─── */
+  function handleConvDragStart(e: React.DragEvent, convId: string) {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", convId);
+    setDraggingConvId(convId);
+  }
+  function handleConvDragEnd() {
+    setDraggingConvId(null);
+    setDragOverTarget(null);
+  }
+  function handleFolderDragOver(e: React.DragEvent, targetId: string) {
+    if (!draggingConvId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverTarget(targetId);
+  }
+  function handleFolderDragLeave(e: React.DragEvent, targetId: string) {
+    // Only clear if we're actually leaving this target (not entering a child)
+    const related = e.relatedTarget as Node | null;
+    if (related && (e.currentTarget as Node).contains(related)) return;
+    if (dragOverTarget === targetId) setDragOverTarget(null);
+  }
+  function handleFolderDrop(e: React.DragEvent, folderId: string | undefined) {
+    e.preventDefault();
+    const convId = e.dataTransfer.getData("text/plain") || draggingConvId;
+    if (convId && moveConversationToFolder) {
+      moveConversationToFolder(convId, folderId);
+      // Auto-expand folder on drop
+      if (folderId) {
+        setCollapsedFolders((prev) => { const next = new Set(prev); next.delete(folderId); return next; });
+      }
+    }
+    setDraggingConvId(null);
+    setDragOverTarget(null);
+  }
+
+  /** Create a new conversation directly inside a folder */
+  function createConversationInFolder(folderId: string) {
+    const id = createConversation();
+    if (moveConversationToFolder) moveConversationToFolder(id, folderId);
+    setInputValue("");
+    setAttachedFiles([]);
+    // Make sure the folder is expanded
+    setCollapsedFolders((prev) => { const next = new Set(prev); next.delete(folderId); return next; });
+  }
+
+  /** Render a single conversation row */
+  function renderConvRow(conv: Conversation) {
+    const isDragging = draggingConvId === conv.id;
+    return (
+      <div key={conv.id}
+        className={`chat-conversation-row ${conv.id === activeConversationId ? "active" : ""} ${isDragging ? "dragging" : ""}`}
+        draggable={!!moveConversationToFolder}
+        onDragStart={(e) => handleConvDragStart(e, conv.id)}
+        onDragEnd={handleConvDragEnd}
+      >
+        {editingId === conv.id ? (
+          <input autoFocus className="input" style={{ padding: "4px 8px", fontSize: "0.82rem", height: 28 }}
+            value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
+            onBlur={() => { renameConversation(conv.id, editTitle); setEditingId(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { renameConversation(conv.id, editTitle); setEditingId(null); } if (e.key === "Escape") setEditingId(null); }}
+          />
+        ) : (
+          <button className="chat-conversation-btn" onClick={() => setActiveConversationId(conv.id)}>
+            <MessageSquare size={13} />
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>{conv.title}</span>
+            <span className="muted" style={{ fontSize: "0.7rem", flexShrink: 0 }}>{formatDate(conv.updatedAt)}</span>
+          </button>
+        )}
+        <div className="chat-conversation-actions">
+          <button className="icon-btn" style={{ width: 24, height: 24 }} onClick={() => { setEditingId(conv.id); setEditTitle(conv.title); }} title="Rename"><Pencil size={11} /></button>
+          {moveConversationToFolder && chatFolders.length > 0 && (
+            <button className="icon-btn" style={{ width: 24, height: 24, position: "relative" }}
+              onClick={() => setConvMenuId(convMenuId === conv.id ? null : conv.id)} title="Move to folder">
+              <Folder size={11} />
+            </button>
+          )}
+          <button className="icon-btn" style={{ width: 24, height: 24 }} onClick={() => deleteConversation(conv.id)} title="Delete"><Trash2 size={11} /></button>
+        </div>
+        {/* Move-to-folder dropdown */}
+        {convMenuId === conv.id && moveConversationToFolder && (
+          <div ref={convMenuRef} className="chat-folder-menu" style={{ top: "100%", right: 0 }}>
+            <button className="chat-folder-menu-item" onClick={() => { moveConversationToFolder(conv.id, undefined); setConvMenuId(null); }}>
+              <MessageSquare size={12} /> Unfiled
+            </button>
+            {chatFolders.map((f) => (
+              <button key={f.id} className={`chat-folder-menu-item ${conv.folderId === f.id ? "active" : ""}`}
+                onClick={() => { moveConversationToFolder(conv.id, f.id); setConvMenuId(null); }}>
+                <Folder size={12} /> {f.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="chat-hero-claude">
       <aside className="chat-sidebar">
-        <button className="chat-new-btn" onClick={() => { setActiveConversationId(null); setInputValue(""); setAttachedFiles([]); }}>
-          <Plus size={14} /> New chat
-        </button>
+        <div className="chat-sidebar-top">
+          <button className="chat-new-btn" onClick={() => { setActiveConversationId(null); setInputValue(""); setAttachedFiles([]); }}>
+            <Plus size={14} /> New chat
+          </button>
+          {createChatFolder && (
+            <button className="icon-btn chat-new-folder-btn" title="New folder"
+              onClick={() => { setCreatingFolder(true); setNewFolderName(""); }}>
+              <FolderPlus size={14} />
+            </button>
+          )}
+        </div>
         <div className="chat-search">
           <Search size={12} className="muted" />
           <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search conversations…" />
         </div>
         <div className="chat-conversation-list">
-          {conversationList.map((conv) => (
-            <div key={conv.id} className={`chat-conversation-row ${conv.id === activeConversationId ? "active" : ""}`}>
-              {editingId === conv.id ? (
-                <input autoFocus className="input" style={{ padding: "4px 8px", fontSize: "0.82rem", height: 28 }}
-                  value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
-                  onBlur={() => { renameConversation(conv.id, editTitle); setEditingId(null); }}
-                  onKeyDown={(e) => { if (e.key === "Enter") { renameConversation(conv.id, editTitle); setEditingId(null); } if (e.key === "Escape") setEditingId(null); }}
-                />
-              ) : (
-                <button className="chat-conversation-btn" onClick={() => setActiveConversationId(conv.id)}>
-                  <MessageSquare size={13} />
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>{conv.title}</span>
-                  <span className="muted" style={{ fontSize: "0.7rem", flexShrink: 0 }}>{formatDate(conv.updatedAt)}</span>
-                </button>
-              )}
-              <div className="chat-conversation-actions">
-                <button className="icon-btn" style={{ width: 24, height: 24 }} onClick={() => { setEditingId(conv.id); setEditTitle(conv.title); }} title="Rename"><Pencil size={11} /></button>
-                <button className="icon-btn" style={{ width: 24, height: 24 }} onClick={() => deleteConversation(conv.id)} title="Delete"><Trash2 size={11} /></button>
-              </div>
+          {/* New folder inline input */}
+          {creatingFolder && createChatFolder && (
+            <div className="chat-folder-create">
+              <FolderPlus size={13} className="muted" />
+              <input autoFocus className="input" style={{ padding: "3px 6px", fontSize: "0.82rem", height: 26, flex: 1 }}
+                placeholder="Folder name…"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onBlur={() => { if (newFolderName.trim()) createChatFolder(newFolderName.trim()); setCreatingFolder(false); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { if (newFolderName.trim()) createChatFolder(newFolderName.trim()); setCreatingFolder(false); }
+                  if (e.key === "Escape") setCreatingFolder(false);
+                }}
+              />
             </div>
-          ))}
-          {conversationList.length === 0 && (
+          )}
+
+          {/* Folders */}
+          {chatFolders.map((folder) => {
+            const folderConvs = folderedConvs.get(folder.id) ?? [];
+            const isCollapsed = collapsedFolders.has(folder.id);
+            const isDragOver = dragOverTarget === folder.id;
+            // In search mode, only show folder if it has matching convs
+            if (searchQuery.trim() && folderConvs.length === 0) return null;
+            return (
+              <div key={folder.id}
+                className={`chat-folder-group ${isDragOver ? "drag-over" : ""}`}
+                onDragOver={(e) => handleFolderDragOver(e, folder.id)}
+                onDragLeave={(e) => handleFolderDragLeave(e, folder.id)}
+                onDrop={(e) => handleFolderDrop(e, folder.id)}
+              >
+                <div className="chat-folder-header">
+                  <button className="chat-folder-toggle" onClick={() => toggleFolderCollapse(folder.id)}>
+                    <ChevronRightIcon size={12} className={`chat-folder-chevron ${isCollapsed ? "" : "open"}`} />
+                    {isCollapsed ? <Folder size={13} /> : <FolderOpen size={13} />}
+                    {editingFolderId === folder.id ? (
+                      <input autoFocus className="input" style={{ padding: "2px 6px", fontSize: "0.8rem", height: 22, flex: 1 }}
+                        value={editFolderName}
+                        onChange={(e) => setEditFolderName(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={() => { if (renameChatFolder && editFolderName.trim()) renameChatFolder(folder.id, editFolderName.trim()); setEditingFolderId(null); }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { if (renameChatFolder && editFolderName.trim()) renameChatFolder(folder.id, editFolderName.trim()); setEditingFolderId(null); }
+                          if (e.key === "Escape") setEditingFolderId(null);
+                        }}
+                      />
+                    ) : (
+                      <span className="chat-folder-name">{folder.name}</span>
+                    )}
+                    <span className="chat-folder-count">{folderConvs.length}</span>
+                  </button>
+                  {/* New chat in this folder */}
+                  {moveConversationToFolder && (
+                    <button className="icon-btn chat-folder-new-chat" style={{ width: 22, height: 22 }}
+                      onClick={(e) => { e.stopPropagation(); createConversationInFolder(folder.id); }}
+                      title="New chat in folder">
+                      <Plus size={12} />
+                    </button>
+                  )}
+                  <button className="icon-btn chat-folder-more" style={{ width: 22, height: 22 }}
+                    onClick={(e) => { e.stopPropagation(); setFolderMenuId(folderMenuId === folder.id ? null : folder.id); }}
+                    title="Folder options">
+                    <MoreHorizontal size={12} />
+                  </button>
+                  {/* Folder context menu */}
+                  {folderMenuId === folder.id && (
+                    <div ref={folderMenuRef} className="chat-folder-menu">
+                      <button className="chat-folder-menu-item" onClick={() => { createConversationInFolder(folder.id); setFolderMenuId(null); }}>
+                        <Plus size={12} /> New chat here
+                      </button>
+                      <button className="chat-folder-menu-item" onClick={() => { setEditingFolderId(folder.id); setEditFolderName(folder.name); setFolderMenuId(null); }}>
+                        <Pencil size={12} /> Rename
+                      </button>
+                      {deleteChatFolder && (
+                        <button className="chat-folder-menu-item danger" onClick={() => { deleteChatFolder(folder.id); setFolderMenuId(null); }}>
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {!isCollapsed && (
+                  <div className="chat-folder-children">
+                    {folderConvs.map(renderConvRow)}
+                    {folderConvs.length === 0 && (
+                      <div className="muted" style={{ padding: "6px 12px 6px 32px", fontSize: "0.76rem" }}>
+                        {draggingConvId ? "Drop here" : "Empty"}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Unfiled conversations — also a drop target to remove from folder */}
+          {(unfiledConvs.length > 0 || draggingConvId) && chatFolders.length > 0 && (
+            <div
+              className={`chat-unfiled-zone ${dragOverTarget === "__unfiled__" ? "drag-over" : ""}`}
+              onDragOver={(e) => handleFolderDragOver(e, "__unfiled__")}
+              onDragLeave={(e) => handleFolderDragLeave(e, "__unfiled__")}
+              onDrop={(e) => handleFolderDrop(e, undefined)}
+            >
+              {unfiledConvs.length > 0 && (
+                <div className="chat-unfiled-label">Chats</div>
+              )}
+              {unfiledConvs.map(renderConvRow)}
+            </div>
+          )}
+
+          {/* If no folders exist, render unfiled directly */}
+          {chatFolders.length === 0 && unfiledConvs.map(renderConvRow)}
+
+          {conversationList.length === 0 && !creatingFolder && (
             <div className="muted" style={{ padding: 20, textAlign: "center", fontSize: "0.82rem" }}>{searchQuery ? "No matches" : "No conversations yet"}</div>
           )}
         </div>

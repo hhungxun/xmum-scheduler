@@ -2,20 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   Page, Theme, CalendarEvent, Subject, Assignment, ExamRecord,
   ChatMessage, AcademicOption, MoodleState, AISettings, AIProvider, Note, NoteFolder, Status, ExamKind, MoodleFile,
-  SemesterData, Conversation, UserProfile,
+  SemesterData, Conversation, UserProfile, ChatFolder,
 } from "./types";
 import { usePersistentState } from "./hooks/usePersistentState";
 import { useToast, ToastProvider } from "./hooks/useToast";
-import { api } from "./lib/api";
+import { api, pickDirectory } from "./lib/api";
 import { defaultSemesterData, migrateLegacySemesters } from "./lib/semester";
 import {
   uid, toIsoDate, dateToDayIndex, startOfWeek, addDays, isSameDay, todayDayIndex,
   nextColor, makeNote, makeSubjectFromMoodle, palette, parseTimetable,
-  statusLabels, examKindLabels, localAssetHref, moodleFileKey, readAsDataUrl,
+  statusLabels, examKindLabels, localAssetHref, moodleFileKey, readAsDataUrl, gettingStartedNoteMarkdown,
+  MY_SPACE_CODE, makeMySpaceSubject,
 } from "./lib/utils";
 import { buildSystemContext } from "./lib/aiContext";
 import { extractActions, stripActionBlocks } from "./lib/aiActions";
 import type { AIAction } from "./lib/aiActions";
+import { defaultSubjectFileMarkdown } from "./lib/subjectFile";
 import { Sidebar } from "./components/Sidebar";
 import { Dashboard } from "./pages/Dashboard";
 import { CalendarPage } from "./pages/CalendarPage";
@@ -25,6 +27,7 @@ import { ExamsPage } from "./pages/ExamsPage";
 import { MoodlePage } from "./pages/MoodlePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Onboarding } from "./pages/Onboarding";
+import { InteractiveTourOverlay } from "./components/InteractiveTour";
 import bundledTimetableHtml from "../202604 Semester Timetable.html?raw";
 
 const fallbackAcademicOptions: AcademicOption[] = [
@@ -59,6 +62,7 @@ function App() {
 
   // Conversations are persisted; active conversation is NOT (starts fresh every load)
   const [conversations, setConversations] = usePersistentState<Record<string, Conversation>>("xmum.v3.conversations", {});
+  const [chatFolders, setChatFolders] = usePersistentState<ChatFolder[]>("xmum.v3.chatFolders", []);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [moodle, setMoodle] = usePersistentState<MoodleState>("xmum.v3.moodle", {
     username: "", token: "", siteUser: "",
@@ -81,9 +85,89 @@ function App() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [knowledgeSyncStatus, setKnowledgeSyncStatus] = useState("");
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
+  const [tourActive, setTourActive] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
   const { addToast } = useToast();
 
+  function errorMessage(err: unknown): string {
+    if (err instanceof Error) return err.message;
+    if (typeof err === "string") return err;
+    return "An unknown error occurred";
+  }
+
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
+
+  useEffect(() => {
+    setSemesters((prev) => {
+      let changed = false;
+      const next = Object.fromEntries(Object.entries(prev).map(([id, semester]) => {
+        let mySpace = semester.subjects.find((subject) => subject.code === MY_SPACE_CODE) ?? makeMySpaceSubject();
+        if (!semester.subjects.some((subject) => subject.code === MY_SPACE_CODE)) changed = true;
+        const movedFolders: NoteFolder[] = [];
+        const movedNotes: Note[] = [];
+        const subjectsNext = semester.subjects
+          .filter((subject) => subject.code !== MY_SPACE_CODE && subject.code !== "START")
+          .map((subject) => {
+          const notesNext = subject.notes.filter((note) => {
+            const isDefaultAssessmentPlan = note.title.trim().toLowerCase() === "assessment plan"
+              && note.content.trim().startsWith("# Assessment plan\n\nTrack tasks and tests for");
+            if (isDefaultAssessmentPlan) changed = true;
+            return !isDefaultAssessmentPlan;
+          });
+          const defaultFolderNames = new Set([subject.code.toLowerCase(), `${subject.code} overview`.toLowerCase()]);
+          const customFolders = (subject.folders ?? []).filter((folder) => !defaultFolderNames.has(folder.name.trim().toLowerCase()));
+          if (customFolders.length) {
+            changed = true;
+            const movedFolderIds = new Set(customFolders.map((folder) => folder.id));
+            movedFolders.push(...customFolders);
+            movedNotes.push(...notesNext.filter((note) => note.folderId && movedFolderIds.has(note.folderId)));
+          }
+          const movedNoteIds = new Set(movedNotes.map((note) => note.id));
+          const foldersNext = (subject.folders ?? []).filter((folder) => !customFolders.some((custom) => custom.id === folder.id));
+          const notesInSubject = notesNext.filter((note) => !movedNoteIds.has(note.id));
+          const hasGettingStarted = notesNext.some((note) => note.title.trim().toLowerCase() === "getting started");
+          const finalNotes = hasGettingStarted || subject.code === MY_SPACE_CODE
+            ? notesInSubject
+            : [...notesInSubject, makeNote("Getting Started", gettingStartedNoteMarkdown(subject.code))];
+          if (!hasGettingStarted) changed = true;
+          return notesNext.length === subject.notes.length && hasGettingStarted && customFolders.length === 0
+            ? subject
+            : { ...subject, folders: foldersNext, notes: finalNotes };
+        });
+        const mySpaceFolderIds = new Set((mySpace.folders ?? []).map((folder) => folder.id));
+        const dedupedMovedFolders = movedFolders.filter((folder) => {
+          if (mySpaceFolderIds.has(folder.id)) return false;
+          mySpaceFolderIds.add(folder.id);
+          return true;
+        });
+        const mySpaceNoteIds = new Set(mySpace.notes.map((note) => note.id));
+        const dedupedMovedNotes = movedNotes.filter((note) => {
+          if (mySpaceNoteIds.has(note.id)) return false;
+          mySpaceNoteIds.add(note.id);
+          return true;
+        });
+        const mySpaceHasGettingStarted = mySpace.notes.some((note) => note.title.trim().toLowerCase() === "getting started");
+        if (!mySpaceHasGettingStarted) changed = true;
+        mySpace = {
+          ...mySpace,
+          name: "My Space",
+          folders: [...(mySpace.folders ?? []), ...dedupedMovedFolders],
+          notes: [
+            ...(mySpaceHasGettingStarted ? mySpace.notes : [makeNote("Getting Started", gettingStartedNoteMarkdown("My Space"))]),
+            ...dedupedMovedNotes,
+          ],
+        };
+        const finalSubjects = [mySpace, ...subjectsNext];
+        const activeSubject = finalSubjects.find((subject) => subject.id === semester.activeSubjectId) ?? finalSubjects[0];
+        const activeNoteStillExists = activeSubject?.notes.some((note) => note.id === semester.activeNoteId);
+        const semesterNext = activeNoteStillExists
+          ? { ...semester, subjects: finalSubjects }
+          : { ...semester, subjects: finalSubjects, activeSubjectId: activeSubject?.id ?? mySpace.id, activeNoteId: activeSubject?.notes[0]?.id ?? mySpace.notes[0]?.id ?? "" };
+        return [id, semesterNext];
+      }));
+      return changed ? next : prev;
+    });
+  }, []);
 
   useEffect(() => {
     api<{ options: AcademicOption[] }>("/academic-calendar")
@@ -157,16 +241,16 @@ function App() {
     const timer = window.setTimeout(() => {
       api<{ noteCount: number; root: string }>("/knowledge/sync", {
         method: "POST",
-        body: JSON.stringify({ subjects }),
+        body: JSON.stringify({ subjects, rootPath: userProfile.notesDirectory }),
       })
         .then((payload) => setKnowledgeSyncStatus(`Saved ${payload.noteCount} notes to ${payload.root}`))
         .catch((err: Error) => setKnowledgeSyncStatus(`Local markdown sync failed: ${err.message}`));
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [subjects]);
+  }, [subjects, userProfile.notesDirectory]);
 
   const activeSubject = subjects.find((s) => s.id === activeSubjectId) ?? subjects[0];
-  const activeNote = activeSubject?.notes.find((n) => n.id === activeNoteId) ?? activeSubject?.notes[0];
+  const activeNote = activeSubject?.notes.find((n) => n.id === activeNoteId) ?? (activeNoteId ? activeSubject?.notes[0] : undefined);
   const selectedCalendar = calendarOptions.find((o) => o.id === selectedCalendarId) ?? fallbackAcademicOptions[0];
   const visibleCalendarOptions = calendarOptions.filter((o) =>
     track === "foundation" ? o.track === "foundation" && o.intake === foundationIntake : o.track === "undergraduate",
@@ -181,7 +265,7 @@ function App() {
   const todayEvents = events
     .filter((e) => e.date ? isSameDay(new Date(`${e.date}T00:00:00`), today) : e.dayIndex === todayDayIndex())
     .sort((a, b) => a.start.localeCompare(b.start));
-  const upcomingAssignments = [...assignments].sort((a, b) => a.due.localeCompare(b.due)).slice(0, 6);
+  const upcomingAssignments = [...assignments].filter((a) => !!a.due).sort((a, b) => a.due.localeCompare(b.due)).slice(0, 6);
   const activeAssignments = assignments;
   const activeExams = exams.filter((exam) => exam.subjectId === activeSubject?.id);
 
@@ -190,6 +274,7 @@ function App() {
       .filter((a) => !!a.due)
       .map((assignment) => {
         const subject = subjects.find((s) => s.id === assignment.subjectId);
+        const hasTime = !!assignment.start && !!assignment.end;
         return {
           id: `assignment-${assignment.id}`,
           code: subject?.code ?? "Task",
@@ -197,8 +282,8 @@ function App() {
           lecturer: "",
           venue: "",
           dayIndex: dateToDayIndex(assignment.due),
-          start: "00:00",
-          end: "23:59",
+          start: hasTime ? assignment.start! : "00:00",
+          end: hasTime ? assignment.end! : "23:59",
           weeks: statusLabels[assignment.status],
           subjectId: assignment.subjectId,
           type: "assignment" as const,
@@ -228,7 +313,7 @@ function App() {
   }, [assignments, events, exams, subjects]);
 
   const todayStr = today.toISOString().slice(0, 10);
-  const todaysTasks = assignments.filter((a) => a.due === todayStr && a.status !== "graded");
+  const todaysTasks = assignments.filter((a) => a.due === todayStr && a.status !== "done");
   const upcomingEvents = calendarEvents
     .filter((e) => e.date && e.date > todayStr && e.type !== "assignment")
     .sort((a, b) => a.date!.localeCompare(b.date!) || a.start.localeCompare(b.start))
@@ -237,6 +322,36 @@ function App() {
   // ────────────────── State mutations ──────────────────
 
   function nav(to: Page) { setPage(to); }
+
+  function startTour() {
+    setUserProfile({ ...userProfile, onboardingComplete: true });
+    // Small delay to ensure onboarding unmounts before tour starts
+    setTimeout(() => {
+      setTourActive(true);
+      setTourStep(0);
+      setPage("dashboard");
+    }, 100);
+  }
+
+  function tourNext() {
+    if (tourStep < TOUR_STEPS.length - 1) {
+      setTourStep(tourStep + 1);
+      setPage(TOUR_STEPS[tourStep + 1].page);
+    }
+  }
+
+  function tourBack() {
+    if (tourStep > 0) {
+      setTourStep(tourStep - 1);
+      setPage(TOUR_STEPS[tourStep - 1].page);
+    }
+  }
+
+  function finishTour() {
+    setTourActive(false);
+    setTourStep(0);
+    setUserProfile({ ...userProfile, onboardingComplete: true });
+  }
 
   function toastAdd(message: string, type?: "success" | "error" | "info") {
     try { addToast(message, type); } catch { /* noop */ }
@@ -254,22 +369,29 @@ function App() {
   function applyTimetableImport() {
     if (!timetablePreview.length) return;
     setSubjects((prevSubjects) => {
-      const next = [...prevSubjects];
+      let next = [...prevSubjects];
       const newEvents: CalendarEvent[] = [];
       for (const cls of timetablePreview) {
         let subject = next.find((s) => s.code.toUpperCase() === cls.code.toUpperCase());
         if (!subject) {
-          subject = {
+          const folderId = uid("folder");
+          const tempSubject: Subject = {
             id: uid("subject"),
             code: cls.code.toUpperCase(),
             name: cls.name,
             lecturer: cls.lecturer,
             color: nextColor(next),
-            courseInfo: `# ${cls.name}\n\nLecturer: ${cls.lecturer}\nDefault venue: ${cls.venue}\n`,
-            folders: [],
+            courseInfo: "",
+            folders: [{ id: folderId, name: cls.code.toUpperCase(), createdAt: new Date().toISOString() }],
+            notes: [],
+          };
+          const defaultMarkdown = defaultSubjectFileMarkdown(tempSubject);
+          subject = {
+            ...tempSubject,
+            courseInfo: defaultMarkdown,
             notes: [
-              makeNote(`${cls.code} overview`, `# ${cls.name}\n\nLecturer: ${cls.lecturer}\nDefault venue: ${cls.venue}\n\n[[Assessment plan]]`),
-              makeNote("Assessment plan", `# Assessment plan\n\nTrack assignments and tests for ${cls.code}.`),
+              makeNote(`${cls.code} overview`, defaultMarkdown, folderId),
+              makeNote("Getting Started", gettingStartedNoteMarkdown(cls.code.toUpperCase())),
             ],
           };
           next.push(subject);
@@ -278,8 +400,11 @@ function App() {
         }
         newEvents.push({ ...cls, subjectId: subject.id, type: "class" as const, color: subject.color });
       }
+      // Remove the "Getting Started" welcome subject after real subjects are imported
+      const hadStart = next.some((s) => s.code === "START");
+      next = next.filter((s) => s.code !== "START");
       setEvents(newEvents);
-      if (!activeSubjectId && next[0]) {
+      if (hadStart && next[0]) {
         setActiveSubjectId(next[0].id);
         setActiveNoteId(next[0].notes[0]?.id ?? "");
       }
@@ -336,19 +461,31 @@ function App() {
 
   function createNote(folderId?: string) {
     if (!activeSubject) return;
-    const resolvedFolderId = activeSubject.folders?.some((f) => f.id === folderId) ? folderId : undefined;
+    const defaultFolderId = activeSubject.folders?.[0]?.id;
+    const resolvedFolderId = folderId && activeSubject.folders?.some((f) => f.id === folderId) ? folderId : defaultFolderId;
     const note = makeNote("Untitled", "# Untitled\n\n", resolvedFolderId);
     setSubjects((prev) => prev.map((s) => s.id === activeSubject.id ? { ...s, notes: [note, ...s.notes] } : s));
     setActiveNoteId(note.id);
   }
 
-  function createFolder() {
-    if (!activeSubject) return;
-    const name = prompt("Folder name")?.trim();
-    if (!name) return;
-    const folder: NoteFolder = { id: uid("folder"), name, createdAt: new Date().toISOString() };
-    setSubjects((prev) => prev.map((s) => s.id === activeSubject.id ? { ...s, folders: [...(s.folders ?? []), folder] } : s));
+  function createFolder(name?: string) {
+    const folderName = (name ?? prompt("Folder name")?.trim())?.trim();
+    if (!folderName) return;
+    const folder: NoteFolder = { id: uid("folder"), name: folderName, createdAt: new Date().toISOString() };
+    const existingMySpace = subjects.find((s) => s.code === MY_SPACE_CODE);
+    const createdMySpace = existingMySpace ?? makeMySpaceSubject();
+    const mySpaceId = createdMySpace.id;
+    setSubjects((prev) => {
+      const existing = prev.find((s) => s.code === MY_SPACE_CODE);
+      const mySpace = existing ?? createdMySpace;
+      const nextMySpace = { ...mySpace, folders: [...(mySpace.folders ?? []), folder] };
+      return existing
+        ? prev.map((s) => s.id === existing.id ? nextMySpace : s)
+        : [nextMySpace, ...prev.filter((s) => s.code !== "START")];
+    });
+    setActiveSubjectId(mySpaceId);
     setActiveFolderId(folder.id);
+    setActiveNoteId("");
   }
 
   function deleteFolder(folderId: string) {
@@ -412,19 +549,21 @@ function App() {
     setSubjects((prev) => prev.map((s) => s.id === activeSubject.id ? { ...s, courseInfo } : s));
   }
 
-  function addAssignment(input: { title: string; subjectId: string; due: string; weight: number; description: string; relatedFileIds: string[]; status?: Status; priority?: import("./types").Priority }) {
+  function addAssignment(input: { title: string; subjectId: string; due: string; weight: number; description: string; relatedFileIds: string[]; status?: Status; priority?: import("./types").Priority; start?: string; end?: string }) {
     if (!input.title.trim() || !input.subjectId) return;
     const newAssignment: Assignment = {
       id: uid("assign"),
       subjectId: input.subjectId,
       title: input.title.trim(),
-      due: input.due || toIsoDate(new Date()),
+      due: input.due ?? "",
       weight: Number.isFinite(input.weight) ? input.weight : 0,
       status: input.status ?? "todo",
       priority: input.priority ?? "medium",
       description: input.description,
       relatedFileIds: input.relatedFileIds,
       createdAt: new Date().toISOString(),
+      start: input.start,
+      end: input.end,
     };
     setAssignments((prev) => [newAssignment, ...prev]);
   }
@@ -441,9 +580,9 @@ function App() {
       return { ...assignment, relatedFileIds: Array.from(selected) };
     }));
   }
-  function deleteAssignment(id: string) { setAssignments((prev) => prev.filter((a) => a.id !== id)); toastAdd("Assignment deleted", "info"); }
+  function deleteAssignment(id: string) { setAssignments((prev) => prev.filter((a) => a.id !== id)); toastAdd("Task deleted", "info"); }
 
-  function addExam(input: { title: string; subjectId: string; kind: ExamKind; date: string; weight: number; score: number; maxScore: number; notes: string; relatedFileIds: string[] }) {
+  function addExam(input: { title: string; subjectId: string; kind: ExamKind; date: string; weight: number; score: number; maxScore: number; notes: string; status?: import("./types").ExamStatus; relatedFileIds: string[] }) {
     if (!input.title.trim() || !input.subjectId) return;
     const newExam: ExamRecord = {
       id: uid("exam"),
@@ -455,6 +594,7 @@ function App() {
       score: Number.isFinite(input.score) ? input.score : 0,
       maxScore: Number.isFinite(input.maxScore) && input.maxScore > 0 ? input.maxScore : 100,
       notes: input.notes,
+      status: input.status,
       relatedFileIds: input.relatedFileIds,
       attachments: [],
     };
@@ -495,13 +635,13 @@ function App() {
 
   // ────────────────── Moodle ──────────────────
 
-  async function moodleLogin(event: React.FormEvent<HTMLFormElement>) {
+  async function moodleLogin(event: React.FormEvent<HTMLFormElement>, usernameOverride?: string) {
     event.preventDefault();
     setMoodle({ ...moodle, loading: true, error: "" });
     try {
       const auth = await api<{ token: string; username: string; fullname: string; userid: number }>("/moodle/login", {
         method: "POST",
-        body: JSON.stringify({ username: moodle.username, password: moodlePassword }),
+        body: JSON.stringify({ username: usernameOverride ?? moodle.username, password: moodlePassword }),
       });
       const list = await api<{ courses: import("./types").MoodleCourseLite[] }>("/moodle/courses", {
         method: "POST",
@@ -669,6 +809,7 @@ function App() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       model: aiSettings.model || getDefaultModel(aiSettings.provider),
+      provider: aiSettings.provider,
       messages: [],
     };
     setConversations((prev) => ({ ...prev, [id]: conv }));
@@ -700,6 +841,43 @@ function App() {
     updateConversation(id, { title: title.trim() || "Untitled" });
   }
 
+  function setConversationModel(id: string, model: string, provider?: AIProvider) {
+    updateConversation(id, provider ? { model, provider } : { model });
+  }
+
+  function createChatFolder(name: string): string {
+    const folder: ChatFolder = { id: uid("cfolder"), name: name.trim() || "New folder", createdAt: new Date().toISOString() };
+    setChatFolders((prev) => [...prev, folder]);
+    return folder.id;
+  }
+
+  function renameChatFolder(id: string, name: string) {
+    setChatFolders((prev) => prev.map((f) => f.id === id ? { ...f, name: name.trim() || "Untitled" } : f));
+  }
+
+  function deleteChatFolder(id: string) {
+    setChatFolders((prev) => prev.filter((f) => f.id !== id));
+    // Unassign conversations from the deleted folder
+    setConversations((prev) => {
+      const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        if (next[key].folderId === id) next[key] = { ...next[key], folderId: undefined };
+      }
+      return next;
+    });
+  }
+
+  function moveConversationToFolder(convId: string, folderId: string | undefined) {
+    updateConversation(convId, { folderId });
+  }
+
+  /** Ensure a "Notes" folder exists and return its id */
+  function ensureNotesChatFolder(): string {
+    const existing = chatFolders.find((f) => f.name === "Notes");
+    if (existing) return existing.id;
+    return createChatFolder("Notes");
+  }
+
   function getDefaultModel(provider: AIProvider): string {
     switch (provider) {
       case "openai": return "gpt-4o-mini";
@@ -711,14 +889,24 @@ function App() {
     }
   }
 
-  async function sendChat(text: string, displayText?: string, fileIds?: string[]) {
-    let convId = activeConversationId;
+  function providerForModel(model?: string): AIProvider | undefined {
+    if (!model) return undefined;
+    if (model.startsWith("gpt-") || model.startsWith("o1") || model.startsWith("o3")) return "openai";
+    if (model.startsWith("claude-4") || model.startsWith("claude-3")) return "anthropic";
+    if (model === "claude") return "claude-code";
+    if (model === "codex") return "codex-cli";
+    if (model.startsWith("opencode")) return "opencode";
+    return undefined;
+  }
+
+  async function sendChat(text: string, displayText?: string, fileIds?: string[], contextPrefix?: string, targetConversationId?: string, images?: import("./types").ChatImage[]) {
+    let convId = targetConversationId ?? activeConversationId;
     if (!convId) {
       convId = createConversation(displayText ?? text);
     }
 
     const displayContent = displayText ?? text;
-    const userMsg: ChatMessage = { id: uid("msg"), role: "user", content: displayContent };
+    const userMsg: ChatMessage = { id: uid("msg"), role: "user", content: displayContent, images: images?.length ? images : undefined };
 
     // Update conversation with user message
     setConversations((prev) => {
@@ -730,23 +918,28 @@ function App() {
           ...conv,
           messages: [...conv.messages, userMsg],
           updatedAt: new Date().toISOString(),
-          title: conv.messages.length === 0 ? makeTitle(displayContent) : conv.title,
+          title: conv.messages.length === 0 && !targetConversationId ? makeTitle(displayContent) : conv.title,
         },
       };
     });
 
     setLoadingConversationId(convId);
     try {
-      const conv = getActiveConversation();
+      const conv = targetConversationId ? conversations[targetConversationId] ?? null : getActiveConversation();
       const system = buildSystemContext({ subjects, events, assignments, exams, selectedCalendar, today, activeSubject });
       const effectiveModel = conv?.model ?? aiSettings.model ?? getDefaultModel(aiSettings.provider);
+      const effectiveProvider = conv?.provider ?? providerForModel(conv?.model) ?? aiSettings.provider;
       const allMessages = conv ? [...conv.messages, userMsg] : [userMsg];
-      const historyForAPI = allMessages.slice(-20).map((m) => ({ role: m.role, content: m.content }));
+      const historyForAPI = allMessages.slice(-20).map((m, idx, arr) => {
+        const isLastUser = idx === arr.length - 1 && m.role === "user";
+        const content = isLastUser && contextPrefix ? `${contextPrefix}\n\n${m.content}` : m.content;
+        return { role: m.role, content, images: m.images ?? [] };
+      });
 
       const payload = await api<{ reply: string }>("/ai/chat", {
         method: "POST",
         body: JSON.stringify({
-          provider: aiSettings.provider,
+          provider: effectiveProvider,
           apiKey: aiSettings.apiKey,
           cliCommand: aiSettings.cliCommand,
           model: effectiveModel,
@@ -800,6 +993,14 @@ function App() {
     }
   }
 
+  async function selectNotesDirectory() {
+    const dir = await pickDirectory();
+    if (dir) {
+      setUserProfile({ ...userProfile, notesDirectory: dir });
+      toastAdd(`Notes directory set to: ${dir}`, "success");
+    }
+  }
+
   // ────────────────── Render ──────────────────
 
   return (
@@ -809,7 +1010,7 @@ function App() {
           userProfile={userProfile}
           setUserProfile={setUserProfile}
           onComplete={() => setUserProfile({ ...userProfile, onboardingComplete: true })}
-          onSkip={() => setUserProfile({ ...userProfile, onboardingComplete: true })}
+          onStartTour={startTour}
           // Semester / Timetable
           calendarOptions={calendarOptions}
           track={track}
@@ -834,11 +1035,16 @@ function App() {
           // AI
           aiSettings={aiSettings}
           setAISettings={setAISettings}
+          // Storage
+          notesDirectory={userProfile.notesDirectory}
+          onPickNotesDirectory={selectNotesDirectory}
+          // Subjects (for Moodle matching)
+          subjects={subjects}
           // Navigation
           nav={nav}
         />
       )}
-      <div className="app">
+      <div className={`app${tourActive ? " tour-active" : ""}`}>
         <Sidebar
           page={page}
           nav={nav}
@@ -861,6 +1067,7 @@ function App() {
               loadingConversationId={loadingConversationId}
               aiSettings={aiSettings}
               setAISettings={setAISettings}
+              setConversationModel={setConversationModel}
               activeConversationId={activeConversationId}
               setActiveConversationId={setActiveConversationId}
               createConversation={createConversation}
@@ -874,6 +1081,11 @@ function App() {
               upcomingEvents={upcomingEvents}
               activeSubject={activeSubject}
               go={nav}
+              chatFolders={chatFolders}
+              createChatFolder={createChatFolder}
+              renameChatFolder={renameChatFolder}
+              deleteChatFolder={deleteChatFolder}
+              moveConversationToFolder={moveConversationToFolder}
             />
           )}
           {page === "calendar" && (
@@ -889,6 +1101,7 @@ function App() {
               addAssignment={addAssignment}
               updateAssignment={updateAssignment}
               deleteAssignment={deleteAssignment}
+              updateExam={updateExam}
               weekStart={weekStart}
               weekEnd={weekEnd}
               weekNumber={weekNumber}
@@ -924,12 +1137,20 @@ function App() {
               loadingConversationId={loadingConversationId}
               aiSettings={aiSettings}
               setAISettings={setAISettings}
+              setConversationModel={setConversationModel}
               activeConversationId={activeConversationId}
               setActiveConversationId={setActiveConversationId}
               createConversation={createConversation}
               deleteConversation={deleteConversation}
               renameConversation={renameConversation}
               userProfile={userProfile}
+              exams={exams}
+              addExam={addExam}
+              updateExam={updateExam}
+              deleteExam={deleteExam}
+              ensureNotesChatFolder={ensureNotesChatFolder}
+              moveConversationToFolder={moveConversationToFolder}
+              moodleFiles={moodle.files}
             />
           )}
           {page === "assignments" && (
@@ -1004,13 +1225,92 @@ function App() {
               deleteSemester={deleteSemester}
               userProfile={userProfile}
               setUserProfile={setUserProfile}
+              onPickNotesDirectory={selectNotesDirectory}
             />
           )}
         </div>
+        </div>
       </div>
-    </div>
+      {tourActive && (
+        <InteractiveTourOverlay
+          currentStep={tourStep}
+          totalSteps={TOUR_STEPS.length}
+          step={TOUR_STEPS[tourStep]}
+          onNext={tourNext}
+          onBack={tourBack}
+          onFinish={finishTour}
+        />
+      )}
     </>
   );
 }
+
+const TOUR_STEPS: import("./components/InteractiveTour").TourStep[] = [
+  {
+    page: "dashboard" as Page,
+    title: "Your Dashboard",
+    description: "This is your home base. The AI chat on the left is the primary way to interact — ask it to plan your week, create tasks, or summarize notes. The right side shows your schedule at a glance.",
+    highlights: [
+      { selector: ".dashboard-chat", text: "AI chat — your intelligent assistant. Type / to see available commands, or just ask in natural language.", position: "right" as const },
+      { selector: ".dash-welcome", text: "Personalized greeting with today's date and your profile", position: "bottom" as const },
+      { selector: ".today-card", text: "Today's tasks and upcoming events — click to jump to the full view", position: "top" as const },
+      { selector: ".dash-subjects", text: "Quick access to all your enrolled subjects", position: "top" as const },
+    ],
+    action: { label: "Try the AI chat", hint: "Type \"Plan my study week\" and press Enter" },
+  },
+  {
+    page: "calendar" as Page,
+    title: "Weekly Calendar",
+    description: "Your timetable visualized. Imported classes appear as recurring blocks. Assignments show as deadline markers. You can also create custom events for study sessions.",
+    highlights: [
+      { selector: ".calendar-main", text: "Weekly grid — classes are colored by subject. Hover for details.", position: "top" as const },
+      { selector: ".calendar-page-shell > .calendar-main .card > div:first-child", text: "Navigate weeks with arrows. The current week number and date range are shown here.", position: "bottom" as const },
+      { selector: ".calendar-sidebar", text: "Create custom events — study sessions, office hours, etc. Or ask AI to do it for you.", position: "left" as const },
+    ],
+    action: { label: "Navigate between weeks", hint: "Click the arrows to see next/previous weeks" },
+  },
+  {
+    page: "knowledge" as Page,
+    title: "Knowledge Base",
+    description: "Write and organize notes by subject. Full Markdown support with LaTeX math rendering. Notes are saved locally as .md files. Each note has its own AI chat for Q&A.",
+    highlights: [
+      { selector: ".k-side", text: "Subject list, folders, and notes tree. Click any note to open it in the editor.", position: "right" as const },
+      { selector: ".k-editor", text: "Rich text editor with WYSIWYG and source modes. Supports headings, code blocks, math, and more.", position: "left" as const },
+      { selector: ".k-ai-toggle", text: "Toggle the AI panel — ask questions about the active note, get summaries, or generate content.", position: "left" as const },
+    ],
+    action: { label: "Open or create a note", hint: "Select a subject, then click + to create a new note" },
+  },
+  {
+    page: "assignments" as Page,
+    title: "Task Tracker",
+    description: "Kanban-style task management. Drag tasks between columns as you work. Each task tracks subject, due date, and assessment weight. The AI can create tasks for you too.",
+    highlights: [
+      { selector: ".kanban", text: "Three columns: Todo, In Progress, Done. Drag cards to update status.", position: "top" as const },
+      { selector: ".task-add-form", text: "Quick-add form — or tell the AI \"/create-assignment\" in chat", position: "bottom" as const },
+      { selector: ".task", text: "Each card shows subject, due date, and weight. Click to expand details.", position: "top" as const },
+    ],
+    action: { label: "Add a task", hint: "Enter a title and due date, then click Add" },
+  },
+  {
+    page: "exams" as Page,
+    title: "Exam Tracker",
+    description: "Log quizzes, midterms, and finals. Track your scores, see your current grade per subject, and calculate what you need on upcoming exams to hit your target.",
+    highlights: [
+      { selector: ".exam-list, .exams-page", text: "All assessments grouped by subject with scores and weights", position: "top" as const },
+      { selector: ".exam-charts, .exam-analytics", text: "Grade analytics — see weighted averages and target calculations", position: "bottom" as const },
+    ],
+    action: { label: "Log an exam score", hint: "Click Add Exam, enter the details and your score" },
+  },
+  {
+    page: "moodle" as Page,
+    title: "Moodle Integration",
+    description: "Sync course files from XMUM Moodle for offline access. Synced files can be referenced in AI chat with @ mentions — the AI reads them as context.",
+    highlights: [
+      { selector: ".page .card:first-child", text: "Sign in with your XMUM Moodle credentials to get started", position: "top" as const },
+      { selector: ".moodle-tree, .course-list", text: "Browse downloaded files organized by course and section", position: "top" as const },
+    ],
+    action: { label: "Explore the Moodle tab", hint: "Connect or browse your synced files" },
+  },
+];
 
 export default AppShell;

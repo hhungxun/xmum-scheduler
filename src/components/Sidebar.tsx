@@ -54,7 +54,7 @@ export function Sidebar({
       <NavItem icon={<Home size={16} />} label="Dashboard" active={page === "dashboard"} onClick={() => nav("dashboard")} collapsed={collapsed} />
       <NavItem icon={<CalendarIcon size={16} />} label="Calendar" active={page === "calendar"} onClick={() => nav("calendar")} collapsed={collapsed} />
       <NavItem icon={<BookOpen size={16} />} label="Knowledge" active={page === "knowledge"} onClick={() => nav("knowledge")} collapsed={collapsed} />
-      <NavItem icon={<CheckSquare size={16} />} label="Assignments" active={page === "assignments"} onClick={() => nav("assignments")} collapsed={collapsed} />
+      <NavItem icon={<CheckSquare size={16} />} label="Tasks" active={page === "assignments"} onClick={() => nav("assignments")} collapsed={collapsed} />
       <NavItem icon={<GraduationCap size={16} />} label="Exams" active={page === "exams"} onClick={() => nav("exams")} collapsed={collapsed} />
       <NavItem icon={<Cloud size={16} />} label="Moodle" active={page === "moodle"} onClick={() => nav("moodle")} collapsed={collapsed} suffix={moodleConnected && !collapsed ? <span className="tag">on</span> : null} />
 
