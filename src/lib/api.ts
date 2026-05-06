@@ -49,7 +49,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       throw new Error(`Unknown API path: ${path}`);
     }
     const snakeBody = convertKeys(body, "toSnake");
-    const result = await tauriInvoke<unknown>(cmd, snakeBody as Parameters<typeof tauriInvoke>[1]);
+    // Tauri commands expect a named "request" parameter for struct args
+    const args = cmd === "academic_calendar" || cmd === "pick_directory"
+      ? snakeBody
+      : { request: snakeBody };
+    const result = await tauriInvoke<unknown>(cmd, args as Parameters<typeof tauriInvoke>[1]);
     return convertKeys(result, "toCamel") as T;
   }
 
@@ -85,7 +89,7 @@ export async function getLocalFileUrl(path: string, type: "moodle" | "upload"): 
   if (isTauriAvailable()) {
     try {
       const bytes = await tauriInvoke<number[]>(type === "moodle" ? "get_moodle_file" : "get_upload_file", {
-        path,
+        request: { path },
       });
       const blob = new Blob([new Uint8Array(bytes)]);
       return URL.createObjectURL(blob);
